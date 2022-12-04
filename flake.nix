@@ -42,17 +42,21 @@
 
         crateName = "nicacher";
         src = ./.;
+
+        buildInputs = with pkgs; [
+          darwin.apple_sdk.frameworks.Security
+        ];
       in
       rec {
         packages.default = packages."${crateName}";
 
         packages."${crateName}" = naersk-lib.buildPackage {
-          inherit src;
+          inherit src buildInputs;
           pname = crateName;
         };
 
         devShell = pkgs.mkShell {
-          buildInputs = with pkgs; [ ];
+          buildInputs = with pkgs; [ ] ++ buildInputs;
 
           nativeBuildInputs = with pkgs; [
             rust-dev
