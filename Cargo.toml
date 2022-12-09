@@ -8,11 +8,14 @@ actix-web = "4"
 reqwest = { version = "0.11", features = ["gzip"] }
 mime = "0.3.16"
 
+tokio = { version = "1", features = ["full"] }
+apalis = { version = "0.3", features = ["sqlite", "cron", "extensions"] }
+tower = "0.4"
+
 anyhow = "1.0"
 thiserror = "1.0"
 
 derive_builder = "0.12"
-chrono = "0.4"
 
 serde = { version = "1.0", features = ["derive"] }
 xz2 = { version = "0.1", features = ["tokio"] }

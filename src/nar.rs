@@ -7,26 +7,26 @@ use std::{
 
 use anyhow::{bail, Context, Result};
 use derive_builder::Builder;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
-const NARINFO_MIME: &'static str = "text/x-nix-narinfo";
+pub const NARINFO_MIME: &'static str = "text/x-nix-narinfo";
 
 #[derive(Debug, Builder)]
 #[builder(private, setter(into, strip_option))]
 pub struct NarInfo {
-    store_path: StorePath,
-    url: String,
-    compression: CompressionType,
-    file_hash: Hash,
-    file_size: usize,
-    nar_hash: Hash,
-    nar_size: usize,
+    pub store_path: StorePath,
+    pub url: String,
+    pub compression: CompressionType,
+    pub file_hash: Hash,
+    pub file_size: usize,
+    pub nar_hash: Hash,
+    pub nar_size: usize,
     #[builder(default)]
-    deriver: Option<String>,
+    pub deriver: Option<String>,
     #[builder(default)]
-    system: Option<String>,
-    references: Vec<Derivation>,
-    signature: String,
+    pub system: Option<String>,
+    pub references: Vec<Derivation>,
+    pub signature: String,
 }
 
 impl fmt::Display for NarInfo {
@@ -83,9 +83,9 @@ impl NarInfo {
                         "Compression" => {
                             nar_info_builder.compression(value.parse::<CompressionType>()?)
                         }
-                        "FileHash" => nar_info_builder.file_hash(value),
+                        "FileHash" => nar_info_builder.file_hash(value.parse::<Hash>()?),
                         "FileSize" => nar_info_builder.file_size(value.parse::<usize>()?),
-                        "NarHash" => nar_info_builder.nar_hash(value),
+                        "NarHash" => nar_info_builder.nar_hash(value.parse::<Hash>()?),
                         "NarSize" => nar_info_builder.nar_size(value.parse::<usize>()?),
                         "Deriver" => nar_info_builder.deriver(value),
                         "System" => nar_info_builder.system(value),
@@ -113,8 +113,15 @@ impl NarInfo {
 
 #[derive(Debug, Deserialize)]
 pub struct NarFile {
-    hash: Hash,
-    compression: CompressionType,
+    pub hash: Hash,
+    pub compression: CompressionType,
+    pub path: Option<String>,
+}
+
+impl fmt::Display for NarFile {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}.nar.{}", self.hash.string, self.compression)
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -124,18 +131,26 @@ pub struct Derivation {
 }
 
 #[derive(Debug, thiserror::Error)]
-#[error("Invalid derivation: {0}")]
-pub struct InvalidDerivationError(String);
+pub enum DerivationParseError {
+    #[error("Invalid derivation name format")]
+    InvalidFormat,
+    #[error("Missing package name")]
+    MissingPackageName,
+    #[error("Invalid hash: {0}")]
+    InvalidHash(HashParseError),
+}
 
 impl FromStr for Derivation {
-    type Err = InvalidDerivationError;
+    type Err = DerivationParseError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let (hash, package) = s.split_once('-').ok_or(InvalidDerivationError(s.into()))?;
-        Ok(Self {
-            package: package.into(),
-            hash: hash.into(),
-        })
+        let (hash, package) = match s.split_once('-') {
+            None => return Err(Self::Err::InvalidFormat),
+            Some((_, "")) => return Err(Self::Err::MissingPackageName),
+            Some((h, p)) => (h.try_into().map_err(Self::Err::InvalidHash)?, p.into()),
+        };
+
+        Ok(Self { package, hash })
     }
 }
 
@@ -146,17 +161,86 @@ impl fmt::Display for Derivation {
 }
 
 #[derive(Clone, Debug, Deserialize)]
-pub struct Hash(String);
+#[serde(try_from = "&str")]
+pub struct Hash {
+    method: HashMethod,
+    string: String,
+}
 
 impl fmt::Display for Hash {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.0)
+        let Self { method, string } = self;
+
+        if let HashMethod::Unknown = method {
+            write!(f, "{string}")
+        } else {
+            write!(f, "{method}:{string}")
+        }
     }
 }
 
-impl From<&str> for Hash {
+#[derive(Debug, thiserror::Error)]
+pub enum HashParseError {
+    #[error("Missing hash string")]
+    MissingHash,
+    #[error("Hash string contains non-alphanumeric characters")]
+    HashNonAlphanumeric,
+}
+
+impl FromStr for Hash {
+    type Err = HashParseError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let (method, string) = match s.split_once(':') {
+            None => (HashMethod::Unknown, s),
+            Some((_, "")) => return Err(Self::Err::MissingHash),
+            Some((m, s)) => (HashMethod::from(m), s),
+        };
+
+        if !string.chars().all(char::is_alphanumeric) {
+            return Err(Self::Err::HashNonAlphanumeric);
+        }
+
+        Ok(Self {
+            method,
+            string: string.to_owned(),
+        })
+    }
+}
+
+impl TryFrom<&str> for Hash {
+    type Error = HashParseError;
+
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        value.parse()
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(from = "&str")]
+pub enum HashMethod {
+    Sha256,
+    Other(String),
+    Unknown,
+}
+
+impl fmt::Display for HashMethod {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Sha256 => write!(f, "sha256"),
+            Self::Other(s) => write!(f, "{s}"),
+            Self::Unknown => write!(f, "[unknown]"),
+        }
+    }
+}
+
+impl From<&str> for HashMethod {
     fn from(s: &str) -> Self {
-        Self(String::from(s))
+        match s {
+            "sha256" => Self::Sha256,
+            "" => Self::Unknown,
+            _ => Self::Other(s.to_owned()),
+        }
     }
 }
 
@@ -168,10 +252,10 @@ pub struct StorePath {
 
 #[derive(Debug, thiserror::Error)]
 pub enum StorePathParseError {
-    #[error("Invalid Store Path: {0}")]
+    #[error("Invalid Store Path: {0:?}")]
     InvalidPath(PathBuf),
-    #[error("Invalid Derivation: {0}")]
-    InvalidDerivation(InvalidDerivationError),
+    #[error("Invalid Derivation: {0:?}")]
+    InvalidDerivation(DerivationParseError),
 }
 
 impl TryFrom<&Path> for StorePath {
@@ -181,9 +265,9 @@ impl TryFrom<&Path> for StorePath {
         let derivation = path
             .file_name()
             .and_then(OsStr::to_str)
-            .ok_or(Self::Error::InvalidPath(path.to_owned()))?
+            .ok_or(StorePathParseError::InvalidPath(path.to_owned()))?
             .parse()
-            .map_err(Self::Error::InvalidDerivation)?;
+            .map_err(StorePathParseError::InvalidDerivation)?;
 
         Ok(StorePath {
             path: path.to_owned(),
@@ -213,7 +297,7 @@ pub enum CompressionType {
 }
 
 #[derive(Debug, thiserror::Error)]
-#[error("Unsupported compression type: {0}")]
+#[error("Unsupported compression type: {0:?}")]
 pub struct CompressionTypeParseError(String);
 
 impl FromStr for CompressionType {
