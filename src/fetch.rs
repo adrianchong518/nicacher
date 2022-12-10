@@ -1,4 +1,3 @@
-use crate::NarFile;
 use std::{
     io::{self, Read},
     path::Path,
@@ -53,26 +52,23 @@ pub async fn download_nar_info(hash: &Hash, path: impl AsRef<Path>) -> Result<()
         })
 }
 
-pub async fn get_nar_file_raw(nar_file: &NarFile) -> Result<Response> {
-    let nar_file_url = if let Some(path) = &nar_file.path {
-        format!("https://cache.nixos.org/{path}")
-    } else {
-        format!("https://cache.nixos.org/nar/{nar_file}")
-    };
+pub async fn get_nar_file_raw(nar_info: &NarInfo) -> Result<Response> {
+    let nar_file_url = format!("https://cache.nixos.org/{}", nar_info.url);
 
     reqwest::get(&nar_file_url)
         .await?
         .error_for_status()
-        .with_context(|| format!("Failed to get nar file: {nar_file}"))
+        .with_context(|| format!("Failed to get nar file: {}", nar_info.url))
 }
 
-pub async fn download_nar_file(nar_file: &NarFile, path: impl AsRef<Path>) -> Result<()> {
-    let nar_file_bytes = get_nar_file_raw(nar_file).await?.bytes().await?;
+pub async fn download_nar_file(nar_info: &NarInfo, path: impl AsRef<Path>) -> Result<()> {
+    let nar_file_bytes = get_nar_file_raw(nar_info).await?.bytes().await?;
     write_bytes_to_file(&nar_file_bytes, &path)
         .await
         .with_context(|| {
             format!(
-                "Failed to write narfile ({nar_file}) to {}",
+                "Failed to write narfile ({}) to {}",
+                nar_info.url,
                 path.as_ref().display()
             )
         })
@@ -112,12 +108,7 @@ mod tests {
     async fn download_nar_file_test() -> Result<()> {
         let nar_info =
             get_nar_info(&Hash::try_from("0006a1aaikgmpqsn5354wi6hibadiwp4").unwrap()).await?;
-        let nar_file = NarFile {
-            hash: nar_info.file_hash,
-            compression: nar_info.compression,
-            path: Some(nar_info.url),
-        };
 
-        download_nar_file(&nar_file, format!("out/test/{nar_file}")).await
+        download_nar_file(&nar_info, format!("out/test/{}", nar_info.url)).await
     }
 }

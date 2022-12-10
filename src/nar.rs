@@ -5,14 +5,13 @@ use std::{
     str::FromStr,
 };
 
-use anyhow::{bail, Context, Result};
 use derive_builder::Builder;
 use serde::{Deserialize, Serialize};
 
 pub const NARINFO_MIME: &'static str = "text/x-nix-narinfo";
 
 #[derive(Debug, Builder)]
-#[builder(private, setter(into, strip_option))]
+#[builder(setter(into, strip_option))]
 pub struct NarInfo {
     pub store_path: StorePath,
     pub url: String,
@@ -70,44 +69,88 @@ impl fmt::Display for NarInfo {
     }
 }
 
-impl NarInfo {
-    pub fn from_str(text: &str) -> Result<Self> {
+#[derive(Debug, thiserror::Error)]
+pub enum NarInfoParseError {
+    #[error("Invalid field value \"{0}\": {1}")]
+    InvalidFieldValue(String, String),
+
+    #[error("Missing field: {0}")]
+    MissingField(NarInfoBuilderError),
+
+    #[error("Unknown field: \"{0}\"")]
+    UnknownField(String),
+
+    #[error("Invalid valid reference: {0}")]
+    InvalidReference(DerivationParseError),
+
+    #[error("Invalid entry format: \"{0}\"")]
+    InvalidEntryFormat(String),
+}
+
+impl FromStr for NarInfo {
+    type Err = NarInfoParseError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
         let mut nar_info_builder = NarInfoBuilder::default();
 
-        for line in text.lines() {
+        for line in s.lines() {
             if let Some((key, value)) = line.split_once(": ") {
-                (|| {
-                    match key {
-                        "StorePath" => nar_info_builder.store_path(value.parse::<StorePath>()?),
-                        "URL" => nar_info_builder.url(value),
-                        "Compression" => {
-                            nar_info_builder.compression(value.parse::<CompressionType>()?)
-                        }
-                        "FileHash" => nar_info_builder.file_hash(value.parse::<Hash>()?),
-                        "FileSize" => nar_info_builder.file_size(value.parse::<usize>()?),
-                        "NarHash" => nar_info_builder.nar_hash(value.parse::<Hash>()?),
-                        "NarSize" => nar_info_builder.nar_size(value.parse::<usize>()?),
-                        "Deriver" => nar_info_builder.deriver(value),
-                        "System" => nar_info_builder.system(value),
-                        "References" => nar_info_builder.references(
-                            value
-                                .split(' ')
-                                .map(Derivation::from_str)
-                                .collect::<Result<Vec<_>, _>>()
-                                .context("Failed to parse references")?,
-                        ),
-                        "Sig" => nar_info_builder.signature(value),
-                        _ => bail!("Unknown narinfo entry: {line}"),
-                    };
-                    Ok(())
-                })()
-                .with_context(|| format!("Parsing narinfo line: {line}"))?;
+                match key {
+                    "StorePath" => {
+                        nar_info_builder.store_path(value.parse::<StorePath>().map_err(|e| {
+                            Self::Err::InvalidFieldValue("StorePath".to_owned(), e.to_string())
+                        })?)
+                    }
+                    "URL" => nar_info_builder.url(value),
+                    "Compression" => nar_info_builder.compression(
+                        value.parse::<CompressionType>().map_err(|e| {
+                            Self::Err::InvalidFieldValue("Compression".to_owned(), e.to_string())
+                        })?,
+                    ),
+                    "FileHash" => {
+                        nar_info_builder.file_hash(value.parse::<Hash>().map_err(|e| {
+                            Self::Err::InvalidFieldValue("FileHash".to_owned(), e.to_string())
+                        })?)
+                    }
+                    "FileSize" => {
+                        nar_info_builder.file_size(value.parse::<usize>().map_err(|e| {
+                            Self::Err::InvalidFieldValue("FileSize".to_owned(), e.to_string())
+                        })?)
+                    }
+                    "NarHash" => nar_info_builder.nar_hash(value.parse::<Hash>().map_err(|e| {
+                        Self::Err::InvalidFieldValue("NarHash".to_owned(), e.to_string())
+                    })?),
+                    "NarSize" => {
+                        nar_info_builder.nar_size(value.parse::<usize>().map_err(|e| {
+                            Self::Err::InvalidFieldValue("NarSize".to_owned(), e.to_string())
+                        })?)
+                    }
+                    "Deriver" => nar_info_builder.deriver(value),
+                    "System" => nar_info_builder.system(value),
+                    "References" => nar_info_builder.references(
+                        value
+                            .split(' ')
+                            .map(Derivation::from_str)
+                            .collect::<Result<Vec<_>, _>>()
+                            .map_err(Self::Err::InvalidReference)?,
+                    ),
+                    "Sig" => nar_info_builder.signature(value),
+                    _ => return Err(Self::Err::UnknownField(line.to_owned())),
+                };
             } else {
-                bail!("Invalid entry format in narinfo: {line}")
+                return Err(Self::Err::InvalidEntryFormat(line.to_owned()));
             }
         }
 
-        nar_info_builder.build().map_err(anyhow::Error::from)
+        nar_info_builder.build().map_err(Self::Err::MissingField)
+    }
+}
+
+impl TryFrom<&str> for NarInfo {
+    type Error = NarInfoParseError;
+
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        value.parse()
     }
 }
 

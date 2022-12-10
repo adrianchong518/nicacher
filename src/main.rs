@@ -12,7 +12,7 @@ use apalis::{
 use env_logger::Env;
 use serde::{Deserialize, Serialize};
 use tower::ServiceBuilder;
-use tracing::{info, trace};
+use tracing::info;
 use tracing_actix_web::TracingLogger;
 
 use crate::nar::{Hash, NarFile, NARINFO_MIME};
