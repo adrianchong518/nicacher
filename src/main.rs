@@ -1,9 +1,11 @@
+mod config;
 mod fetch;
-mod nar;
+mod nix;
 
-use std::{io, str::FromStr};
+use std::{env, fs, io, str::FromStr};
 
 use actix_web::{get, http::header::ContentType, web, App, HttpResponse, HttpServer, Responder};
+use anyhow::Context;
 use apalis::{
     cron::{CronWorker, Schedule},
     prelude::*,
@@ -12,46 +14,19 @@ use apalis::{
 use env_logger::Env;
 use serde::{Deserialize, Serialize};
 use tower::ServiceBuilder;
-use tracing::info;
+use tracing::{info, trace, warn};
 use tracing_actix_web::TracingLogger;
 
-use crate::nar::{Hash, NarFile, NARINFO_MIME};
-
-#[get("/")]
-async fn index() -> impl Responder {
-    "NiCacher is up!"
-}
-
-#[get("/nix-cache-info")]
-async fn nix_cache_info() -> impl Responder {
-    "StoreDir: /nix/store\n\
-    WantMassQuery: 0\n\
-    Priority: 30\n"
-}
-
-#[get("/{hash}.narinfo")]
-async fn get_nar_info(hash: web::Path<Hash>) -> HttpResponse {
-    let nar_info = fetch::get_nar_info_raw(&hash)
-        .await
-        .unwrap()
-        .text()
-        .await
-        .unwrap();
-
-    HttpResponse::Ok()
-        .content_type(ContentType(NARINFO_MIME.parse().unwrap()))
-        .body(nar_info)
-}
-
-#[get("/nar/{hash}.nar.{compression}")]
-async fn get_nar_file(nar_file: web::Path<NarFile>) -> impl Responder {
-    format!("{nar_file:?}")
-}
+use crate::nix::{Hash, NarFile, NARINFO_MIME};
 
 #[actix_web::main]
 async fn main() -> io::Result<()> {
-    let env = Env::default().default_filter_or("info,sqlx::query=warn");
-    env_logger::Builder::from_env(env).init();
+    env_logger::Builder::from_env(
+        Env::default().filter_or("NICACHER_LOG", "info,sqlx::query=warn"),
+    )
+    .init();
+
+    let _config = config::get_config();
 
     info!("NiCacher Server starts");
 
@@ -119,4 +94,35 @@ async fn test_job_endpoint(
         Ok(()) => HttpResponse::Ok().body(format!("Test Job added to queue")),
         Err(e) => HttpResponse::InternalServerError().body(format!("{e}")),
     }
+}
+
+#[get("/")]
+async fn index() -> impl Responder {
+    "NiCacher is up!"
+}
+
+#[get("/nix-cache-info")]
+async fn nix_cache_info() -> impl Responder {
+    "StoreDir: /nix/store\n\
+    WantMassQuery: 0\n\
+    Priority: 30\n"
+}
+
+#[get("/{hash}.narinfo")]
+async fn get_nar_info(hash: web::Path<Hash>) -> HttpResponse {
+    let nar_info = fetch::get_nar_info_raw(&hash)
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+
+    HttpResponse::Ok()
+        .content_type(ContentType(NARINFO_MIME.parse().unwrap()))
+        .body(nar_info)
+}
+
+#[get("/nar/{hash}.nar.{compression}")]
+async fn get_nar_file(nar_file: web::Path<NarFile>) -> impl Responder {
+    format!("{nar_file:?}")
 }

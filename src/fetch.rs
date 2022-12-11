@@ -8,7 +8,7 @@ use anyhow::{Context, Result};
 use reqwest::Response;
 use tokio::{fs::File, io::AsyncWriteExt};
 
-use crate::nar::{Hash, NarInfo, StorePath};
+use crate::nix::{Hash, NarInfo, StorePath};
 
 pub async fn get_store_paths(channel: &str) -> Result<Vec<StorePath>> {
     let store_paths_url = format!("https://channels.nixos.org/{channel}/store-paths.xz");

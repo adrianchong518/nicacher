@@ -7,8 +7,18 @@ use std::{
 
 use derive_builder::Builder;
 use serde::{Deserialize, Serialize};
+use serde_with::{DeserializeFromStr, SerializeDisplay};
 
 pub const NARINFO_MIME: &'static str = "text/x-nix-narinfo";
+
+macro_rules! string_newtype_variant {
+    ($method_fn:ident, $method_str:expr) => {
+        #[allow(non_snake_case)]
+        pub fn $method_fn() -> Self {
+            Self($method_str.to_owned())
+        }
+    };
+}
 
 #[derive(Debug, Builder)]
 #[builder(setter(into, strip_option))]
@@ -203,10 +213,17 @@ impl fmt::Display for Derivation {
     }
 }
 
-#[derive(Clone, Debug, Deserialize)]
-#[serde(try_from = "&str")]
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Channel(String);
+
+impl Channel {
+    string_newtype_variant!(NixosUnstable, "nixos-unstable");
+    string_newtype_variant!(NixpkgsUnstable, "nixpkgs-unstable");
+}
+
+#[derive(Clone, Debug, SerializeDisplay, DeserializeFromStr)]
 pub struct Hash {
-    method: HashMethod,
+    method: Option<HashMethod>,
     string: String,
 }
 
@@ -214,10 +231,10 @@ impl fmt::Display for Hash {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let Self { method, string } = self;
 
-        if let HashMethod::Unknown = method {
-            write!(f, "{string}")
+        if let Some(m) = method {
+            write!(f, "{m}:{string}")
         } else {
-            write!(f, "{method}:{string}")
+            write!(f, "{string}")
         }
     }
 }
@@ -235,9 +252,9 @@ impl FromStr for Hash {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let (method, string) = match s.split_once(':') {
-            None => (HashMethod::Unknown, s),
+            None => (None, s),
             Some((_, "")) => return Err(Self::Err::MissingHash),
-            Some((m, s)) => (HashMethod::from(m), s),
+            Some((m, s)) => (Some(HashMethod::from(m)), s),
         };
 
         if !string.chars().all(char::is_alphanumeric) {
@@ -260,30 +277,21 @@ impl TryFrom<&str> for Hash {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(from = "&str")]
-pub enum HashMethod {
-    Sha256,
-    Other(String),
-    Unknown,
+pub struct HashMethod(String);
+
+impl HashMethod {
+    string_newtype_variant!(Sha256, "sha256");
 }
 
 impl fmt::Display for HashMethod {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Sha256 => write!(f, "sha256"),
-            Self::Other(s) => write!(f, "{s}"),
-            Self::Unknown => write!(f, "[unknown]"),
-        }
+        write!(f, "{}", self.0)
     }
 }
 
 impl From<&str> for HashMethod {
     fn from(s: &str) -> Self {
-        match s {
-            "sha256" => Self::Sha256,
-            "" => Self::Unknown,
-            _ => Self::Other(s.to_owned()),
-        }
+        HashMethod(s.to_owned())
     }
 }
 
@@ -349,7 +357,7 @@ impl FromStr for CompressionType {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         Ok(match s {
             "xz" => Self::Xz,
-            _ => return Err(CompressionTypeParseError(String::from(s))),
+            _ => return Err(CompressionTypeParseError(s.to_owned())),
         })
     }
 }
