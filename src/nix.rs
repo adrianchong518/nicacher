@@ -1,15 +1,12 @@
-use std::{
-    ffi::OsStr,
-    fmt,
-    path::{Path, PathBuf},
-    str::FromStr,
-};
+use std::fmt;
+use std::path::{Path, PathBuf};
+use std::str::FromStr;
 
 use derive_builder::Builder;
 use serde::{Deserialize, Serialize};
 use serde_with::{DeserializeFromStr, SerializeDisplay};
 
-pub const NARINFO_MIME: &'static str = "text/x-nix-narinfo";
+pub const NARINFO_MIME: &str = "text/x-nix-narinfo";
 
 macro_rules! string_newtype_variant {
     ($method_fn:ident, $method_str:expr) => {
@@ -67,11 +64,8 @@ impl fmt::Display for NarInfo {
         }
 
         write!(f, "References:")?;
-        self.references
-            .iter()
-            .map(|d| write!(f, " {d}"))
-            .collect::<fmt::Result>()?;
-        write!(f, "\n")?;
+        self.references.iter().try_for_each(|d| write!(f, " {d}"))?;
+        writeln!(f)?;
 
         write!(f, "Sig: {}", self.signature)?;
 
@@ -315,8 +309,8 @@ impl TryFrom<&Path> for StorePath {
     fn try_from(path: &Path) -> Result<Self, Self::Error> {
         let derivation = path
             .file_name()
-            .and_then(OsStr::to_str)
-            .ok_or(StorePathParseError::InvalidPath(path.to_owned()))?
+            .and_then(std::ffi::OsStr::to_str)
+            .ok_or_else(|| StorePathParseError::InvalidPath(path.to_owned()))?
             .parse()
             .map_err(StorePathParseError::InvalidDerivation)?;
 

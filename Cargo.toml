@@ -23,6 +23,8 @@ serde_with = "2.1"
 xz2 = { version = "0.1", features = ["tokio"] }
 toml = "0.5"
 
-env_logger = "0.10"
 tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tracing-log = "0.1"
+tracing-bunyan-formatter = "0.3"
 tracing-actix-web = "0.6"

@@ -61,6 +61,7 @@
           nativeBuildInputs = with pkgs; [
             rust-dev
             rust-analyzer
+            bunyan-rs
 
             rnix-lsp
           ];

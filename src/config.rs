@@ -1,31 +1,29 @@
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
-use tracing::{info, trace, warn};
 use url::Url;
 
 use crate::nix::Channel;
 
-pub fn get_config() -> Config {
-    use anyhow::Context as _;
-
-    info!("Reading config from env");
+pub fn get() -> Config {
+    tracing::info!("Reading config from env");
 
     let config = (|| -> anyhow::Result<Config> {
-        let config_path = std::env::var("NICACHER_CONFIG")?;
+        use anyhow::Context as _;
 
+        let config_path = std::env::var("NICACHER_CONFIG")?;
         let config_str = std::fs::read_to_string(&config_path)
-            .with_context(|| format!("Unable to read config from {config_path}"))?;
+            .with_context(|| format!("Unable to read config from {config_path:?}"))?;
 
         Ok(toml::from_str::<Config>(&config_str)?)
     })()
     .unwrap_or_else(|e| {
-        warn!("Unable to read config from env: {e}");
-        warn!("Using default config");
+        tracing::warn!("Unable to read config from env: {e}");
+        tracing::warn!("Using default config");
         Config::default()
     });
 
-    trace!("Using config: {config:?}");
+    tracing::trace!("Using config: {config:?}");
 
     config
 }
