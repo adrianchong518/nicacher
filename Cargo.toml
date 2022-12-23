@@ -10,6 +10,8 @@ mime = "0.3.16"
 url = { version = "2.3", features = ["serde"] }
 
 tokio = { version = "1", features = ["full"] }
+futures = "0.3"
+
 apalis = { version = "0.3", features = ["sqlite", "cron", "extensions"] }
 tower = "0.4"
 

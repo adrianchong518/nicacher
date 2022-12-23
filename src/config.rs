@@ -19,7 +19,7 @@ pub fn get() -> Config {
     })()
     .unwrap_or_else(|e| {
         tracing::warn!("Unable to read config from env: {e}");
-        tracing::warn!("Using default config");
+        tracing::info!("Using default config");
         Config::default()
     });
 
@@ -28,15 +28,15 @@ pub fn get() -> Config {
     config
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(default)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
 pub struct Config {
-    upstreams: Vec<Upstream>,
+    pub upstreams: Vec<Upstream>,
 
-    channel_url: Url,
-    channels: Vec<Channel>,
+    pub channel_url: Url,
+    pub channels: Vec<Channel>,
 
-    local_cache_path: PathBuf,
+    pub local_data_path: PathBuf,
 }
 
 impl Default for Config {
@@ -48,20 +48,20 @@ impl Default for Config {
             }],
             channel_url: Url::parse("https://channels.nixos.org/").unwrap(),
             channels: vec![Channel::NixpkgsUnstable()],
-            local_cache_path: ".".into(),
+            local_data_path: ".".into(),
         }
     }
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Upstream {
-    url: Url,
+    pub url: Url,
     #[serde(default)]
-    prioriy: Priority,
+    pub prioriy: Priority,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-struct Priority(u32);
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+pub struct Priority(u32);
 
 impl Default for Priority {
     fn default() -> Self {

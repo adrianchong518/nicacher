@@ -1535,6 +1535,7 @@ dependencies = [
  "anyhow",
  "apalis",
  "derive_builder",
+ "futures 0.3.25",
  "mime",
  "reqwest",
  "serde",

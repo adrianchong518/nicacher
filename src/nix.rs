@@ -98,7 +98,10 @@ impl FromStr for NarInfo {
         let mut nar_info_builder = NarInfoBuilder::default();
 
         for line in s.lines() {
-            if let Some((key, value)) = line.split_once(": ") {
+            if let Some((key, value)) = line.split_once(":") {
+                let key = key.trim();
+                let value = value.trim();
+
                 match key {
                     "StorePath" => {
                         nar_info_builder.store_path(value.parse::<StorePath>().map_err(|e| {
@@ -133,7 +136,7 @@ impl FromStr for NarInfo {
                     "System" => nar_info_builder.system(value),
                     "References" => nar_info_builder.references(
                         value
-                            .split(' ')
+                            .split_whitespace()
                             .map(Derivation::from_str)
                             .collect::<Result<Vec<_>, _>>()
                             .map_err(Self::Err::InvalidReference)?,
@@ -217,8 +220,17 @@ impl Channel {
 
 #[derive(Clone, Debug, SerializeDisplay, DeserializeFromStr)]
 pub struct Hash {
-    method: Option<HashMethod>,
-    string: String,
+    pub method: Option<HashMethod>,
+    pub string: String,
+}
+
+impl Hash {
+    pub fn into_no_method(self) -> Self {
+        Self {
+            method: None,
+            string: self.string,
+        }
+    }
 }
 
 impl fmt::Display for Hash {

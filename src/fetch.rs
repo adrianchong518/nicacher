@@ -1,12 +1,13 @@
-use std::io;
 use std::path::Path;
-use std::str::FromStr;
+use std::str::FromStr as _;
+use std::{fmt, io};
 
 use anyhow::Context as _;
+use futures::{stream, StreamExt as _};
 
-use crate::nix;
+use crate::{config, nix};
 
-pub async fn get_store_paths(channel: &str) -> anyhow::Result<Vec<nix::StorePath>> {
+pub async fn request_store_paths(channel: &str) -> anyhow::Result<Vec<nix::StorePath>> {
     let store_paths_url = format!("https://channels.nixos.org/{channel}/store-paths.xz");
     let res = reqwest::get(&store_paths_url)
         .await?
@@ -21,54 +22,128 @@ pub async fn get_store_paths(channel: &str) -> anyhow::Result<Vec<nix::StorePath
         .map_err(anyhow::Error::from)
 }
 
-pub async fn get_nar_info_raw(hash: &nix::Hash) -> anyhow::Result<reqwest::Response> {
-    let nar_info_url = format!("https://cache.nixos.org/{hash}.narinfo");
+#[tracing::instrument(skip(config))]
+pub async fn request_nar_info_raw(
+    config: &config::Config,
+    hash: &nix::Hash,
+) -> anyhow::Result<reqwest::Response> {
+    let stream = stream::iter(config.upstreams.iter()).filter_map(|upstream| async {
+        let url = upstream
+            .url
+            .join(&format!("{}.narinfo", hash.string))
+            .map_err(|e| {
+                tracing::warn!(
+                    "Failed to build narinfo url with {} and {}: {e}",
+                    upstream.url,
+                    hash.string
+                );
+            })
+            .ok()?;
 
-    reqwest::get(&nar_info_url)
-        .await?
-        .error_for_status()
-        .with_context(|| format!("Failed to get narinfo for hash: {hash}"))
+        (|| async { reqwest::get(url.clone()).await?.error_for_status() })()
+            .await
+            .map_err(|e| {
+                tracing::warn!("Failed to request {}.narinfo from {url}: {e}", hash.string,);
+            })
+            .ok()
+    });
+    futures::pin_mut!(stream);
+
+    stream.next().await.ok_or(anyhow::anyhow!(
+        "Failed to request {}.narinfo from all upstreams",
+        hash.string
+    ))
 }
 
-pub async fn get_nar_info(hash: &nix::Hash) -> anyhow::Result<nix::NarInfo> {
-    let nar_info_text = get_nar_info_raw(hash).await?.text().await?;
+pub async fn request_nar_info(
+    config: &config::Config,
+    hash: &nix::Hash,
+) -> anyhow::Result<nix::NarInfo> {
+    let nar_info_text = request_nar_info_raw(config, hash).await?.text().await?;
     nix::NarInfo::from_str(&nar_info_text)
         .with_context(|| format!("Failed to parse narinfo when fetching {hash}"))
 }
 
-pub async fn download_nar_info(hash: &nix::Hash, path: impl AsRef<Path>) -> anyhow::Result<()> {
-    let nar_info_bytes = get_nar_info_raw(hash).await?.bytes().await?;
-    write_bytes_to_file(nar_info_bytes, &path)
+#[tracing::instrument(skip(config))]
+pub async fn download_nar_info(
+    config: &config::Config,
+    hash: &nix::Hash,
+    file_path: impl AsRef<Path> + fmt::Debug,
+) -> anyhow::Result<()> {
+    let nar_info_bytes = request_nar_info_raw(config, hash).await?.bytes().await?;
+
+    tracing::debug!(
+        "Writing contents of {}.narinfo to {}",
+        hash.string,
+        file_path.as_ref().display()
+    );
+
+    write_bytes_to_file(nar_info_bytes, &file_path)
         .await
         .with_context(|| {
             format!(
                 "Failed to write narinfo ({hash}) to {}",
-                path.as_ref().display()
+                file_path.as_ref().display()
             )
         })
 }
 
-pub async fn get_nar_file_raw(nar_info: &nix::NarInfo) -> anyhow::Result<reqwest::Response> {
-    let nar_file_url = format!("https://cache.nixos.org/{}", nar_info.url);
+#[tracing::instrument(skip(config))]
+pub async fn request_nar_file_raw(
+    config: &config::Config,
+    url_path: &str,
+) -> anyhow::Result<reqwest::Response> {
+    let stream = stream::iter(config.upstreams.iter()).filter_map(|upstream| async {
+        let url = upstream
+            .url
+            .join(url_path)
+            .map_err(|e| {
+                tracing::warn!(
+                    "Failed to build nar file url with {} and {}: {e}",
+                    upstream.url,
+                    url_path
+                );
+            })
+            .ok()?;
 
-    reqwest::get(&nar_file_url)
-        .await?
-        .error_for_status()
-        .with_context(|| format!("Failed to get nar file: {}", nar_info.url))
+        (|| async { reqwest::get(url.clone()).await?.error_for_status() })()
+            .await
+            .map_err(|e| {
+                tracing::warn!("Failed to request {url_path} from {url}: {e}");
+            })
+            .ok()
+    });
+    futures::pin_mut!(stream);
+
+    stream.next().await.ok_or(anyhow::anyhow!(
+        "Failed to request {url_path} from all upstreams"
+    ))
 }
 
+#[tracing::instrument(skip(config))]
 pub async fn download_nar_file(
-    nar_info: &nix::NarInfo,
-    path: impl AsRef<Path>,
+    config: &config::Config,
+    url_path: &str,
+    file_path: impl AsRef<Path> + fmt::Debug,
 ) -> anyhow::Result<()> {
-    let nar_file_bytes = get_nar_file_raw(nar_info).await?.bytes().await?;
-    write_bytes_to_file(&nar_file_bytes, &path)
+    let nar_file_bytes = request_nar_file_raw(config, url_path)
+        .await?
+        .bytes()
+        .await?;
+
+    tracing::debug!(
+        "Writing contents of {} to {}",
+        url_path,
+        file_path.as_ref().display()
+    );
+
+    write_bytes_to_file(&nar_file_bytes, &file_path)
         .await
         .with_context(|| {
             format!(
                 "Failed to write narfile ({}) to {}",
-                nar_info.url,
-                path.as_ref().display()
+                url_path,
+                file_path.as_ref().display()
             )
         })
 }
@@ -104,6 +179,7 @@ mod tests {
     #[tokio::test]
     async fn download_nar_info_test() -> anyhow::Result<()> {
         download_nar_info(
+            &config::Config::default(),
             &nix::Hash::try_from("0006a1aaikgmpqsn5354wi6hibadiwp4").unwrap(),
             "out/test/0006a1aaikgmpqsn5354wi6hibadiwp4.narinfo",
         )
@@ -112,9 +188,14 @@ mod tests {
 
     #[tokio::test]
     async fn download_nar_file_test() -> anyhow::Result<()> {
-        let nar_info =
-            get_nar_info(&nix::Hash::try_from("0006a1aaikgmpqsn5354wi6hibadiwp4").unwrap()).await?;
+        let config = config::Config::default();
 
-        download_nar_file(&nar_info, format!("out/test/{}", nar_info.url)).await
+        let nar_info = request_nar_info(
+            &config,
+            &nix::Hash::try_from("0006a1aaikgmpqsn5354wi6hibadiwp4").unwrap(),
+        )
+        .await?;
+
+        download_nar_file(&config, &nar_info.url, format!("out/test/{}", nar_info.url)).await
     }
 }
