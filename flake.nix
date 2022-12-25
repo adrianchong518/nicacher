@@ -62,6 +62,7 @@
             rust-dev
             rust-analyzer
             bunyan-rs
+            sqlx-cli
 
             rnix-lsp
           ];

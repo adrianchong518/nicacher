@@ -3,13 +3,14 @@ use std::{fmt, io};
 use apalis::prelude::*;
 use serde::{Deserialize, Serialize};
 
-use crate::{config, fetch, nix};
+use crate::{cache, config, fetch, nix};
 
-pub async fn init(
-    config: &config::Config,
+pub async fn init<'a>(
+    config: &'a config::Config,
+    cache_db_pool: &'a cache::CacheDatabasePool,
 ) -> (
-    impl std::future::Future<Output = io::Result<()>> + '_,
-    apalis::sqlite::SqliteStorage<FetchJob>,
+    impl std::future::Future<Output = io::Result<()>> + 'a,
+    apalis::sqlite::SqliteStorage<Jobs>,
 ) {
     let storage = apalis::sqlite::SqliteStorage::connect("sqlite::memory:")
         .await
@@ -19,87 +20,111 @@ pub async fn init(
         .await
         .expect("Unable to migrate sqlite database");
 
-    (config_workers(config, storage.clone()), storage)
-}
+    let workers = {
+        let storage = storage.clone();
 
-async fn config_workers(
-    config: &config::Config,
-    storage: apalis::sqlite::SqliteStorage<FetchJob>,
-) -> io::Result<()> {
-    use apalis::layers::{Extension, TraceLayer};
+        async move {
+            use apalis::layers::{Extension, TraceLayer};
 
-    fn custom_make_span<T>(req: &JobRequest<T>) -> tracing::Span
-    where
-        T: fmt::Debug,
-    {
-        tracing::span!(
-            parent: tracing::Span::current(),
-            tracing::Level::DEBUG,
-            "job",
-            job = format!("{:?}", req.inner()),
-            job_id = req.id().as_str(),
-            current_attempt = req.attempts(),
-        )
-    }
+            fn custom_make_span<T>(req: &JobRequest<T>) -> tracing::Span
+            where
+                T: fmt::Debug,
+            {
+                tracing::span!(
+                    parent: tracing::Span::current(),
+                    tracing::Level::DEBUG,
+                    "job",
+                    job = format!("{:?}", req.inner()),
+                    job_id = req.id().as_str(),
+                    current_attempt = req.attempts(),
+                )
+            }
 
-    // let cron_worker = {
-    //     use std::str::FromStr as _;
-    //
-    //     use apalis::cron::{CronWorker, Schedule};
-    //     use tower::ServiceBuilder;
-    //
-    //     CronWorker::new(
-    //         Schedule::from_str("*/5 * * * * *").unwrap(),
-    //         ServiceBuilder::new()
-    //             .layer(TraceLayer::new().make_span_with(custom_make_span))
-    //             .service(job_fn(periodic_job)),
-    //     )
-    // };
+            // let cron_worker = {
+            //     use std::str::FromStr as _;
+            //
+            //     use apalis::cron::{CronWorker, Schedule};
+            //     use tower::ServiceBuilder;
+            //
+            //     CronWorker::new(
+            //         Schedule::from_str("*/5 * * * * *").unwrap(),
+            //         ServiceBuilder::new()
+            //             .layer(TraceLayer::new().make_span_with(custom_make_span))
+            //             .service(job_fn(periodic_job)),
+            //     )
+            // };
 
-    Monitor::new()
-        .register_with_count(4, move |_| {
-            WorkerBuilder::new(storage.clone())
-                .layer(TraceLayer::new().make_span_with(custom_make_span))
-                .layer(Extension(config.clone()))
-                .build_fn(dispatch_fetch)
-        })
-        // .register(cron_worker)
-        .run()
-        .await
+            Monitor::new()
+                .register_with_count(4, move |_| {
+                    WorkerBuilder::new(storage.clone())
+                        .layer(TraceLayer::new().make_span_with(custom_make_span))
+                        .layer(Extension(config.clone()))
+                        .layer(Extension(cache_db_pool.clone()))
+                        .build_fn(dispatch_jobs)
+                })
+                // .register(cron_worker)
+                .run()
+                .await
+        }
+    };
+
+    (workers, storage)
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
-pub enum FetchJob {
-    NarInfo(nix::Hash),
-    NarFile(nix::Hash),
+pub enum Jobs {
+    CacheNar { hash: nix::Hash, is_force: bool },
 }
 
-impl Job for FetchJob {
-    const NAME: &'static str = "nicacher::jobs::FetchJob";
+impl Job for Jobs {
+    const NAME: &'static str = "nicacher::jobs::Jobs";
 }
 
-async fn dispatch_fetch(job: FetchJob, ctx: JobContext) -> Result<JobResult, JobError> {
+async fn dispatch_jobs(job: Jobs, ctx: JobContext) -> Result<JobResult, JobError> {
     let config = ctx.data_opt::<config::Config>().unwrap();
+    let cache_db_pool = ctx.data_opt::<cache::CacheDatabasePool>().unwrap();
 
     match job {
-        FetchJob::NarInfo(hash) => {
-            let file_path = config
-                .local_data_path
-                .join("narinfo")
-                .join(format!("{hash}.narinfo"));
+        Jobs::CacheNar {
+            hash,
+            is_force: force,
+        } => {
+            tracing::info!("Caching {}.narinfo and corresponding nar file", hash.string);
 
-            fetch::download_nar_info(&config, &hash, file_path)
+            if !force
+                && cache_db_pool.is_nar_info_cached(&hash).await.map_err(|e| {
+                    tracing::error!("When checking cache status: {e}");
+                    JobError::Unknown
+                })?
+            {
+                tracing::warn!(
+                    "{}.narinfo is already cached, skipping insertion",
+                    hash.string
+                );
+
+                return Ok(JobResult::Success);
+            }
+
+            let (nar_info, upstream) =
+                fetch::request_nar_info(config, &hash).await.map_err(|e| {
+                    tracing::error!("Error when requesting narinfo: {e}");
+                    JobError::Unknown
+                })?;
+
+            cache_db_pool
+                .insert_nar_info(&hash, &nar_info, force)
                 .await
-                .unwrap();
-        }
+                .map_err(|e| {
+                    tracing::error!("Error when inserting narinfo into cache database: {e}",);
+                    JobError::Unknown
+                })?;
 
-        FetchJob::NarFile(hash) => {
-            let nar_info = fetch::request_nar_info(&config, &hash).await.unwrap();
-            let file_path = config.local_data_path.join(&nar_info.url);
-
-            fetch::download_nar_file(&config, &nar_info.url, file_path)
+            fetch::download_nar_file(&config, &upstream, &nar_info)
                 .await
-                .unwrap();
+                .map_err(|e| {
+                    tracing::error!("Error when downloading nar file: {e}");
+                    JobError::Unknown
+                })?;
         }
     };
 

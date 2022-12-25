@@ -18,7 +18,7 @@ macro_rules! string_newtype_variant {
 }
 
 #[derive(Debug, Builder)]
-#[builder(setter(into, strip_option))]
+#[builder(setter(into))]
 pub struct NarInfo {
     pub store_path: StorePath,
     pub url: String,
@@ -32,20 +32,28 @@ pub struct NarInfo {
     #[builder(default)]
     pub system: Option<String>,
     pub references: Vec<Derivation>,
-    pub signature: String,
+    #[builder(default)]
+    pub signature: Option<String>,
+}
+
+impl NarInfo {
+    pub fn nar_filename(&self) -> String {
+        format!("{}.nar.{}", self.file_hash.string, self.compression)
+    }
 }
 
 impl fmt::Display for NarInfo {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "StorePath: {}\n\
-            URL: {}\n\
-            Compression: {}\n\
-            FileHash: {}\n\
-            FileSize: {}\n\
-            NarHash: {}\n\
-            NarSize: {}\n",
+            r#"StorePath: {}
+URL: {}
+Compression: {}
+FileHash: {}
+FileSize: {}
+NarHash: {}
+NarSize: {}
+"#,
             self.store_path,
             self.url,
             self.compression,
@@ -67,7 +75,9 @@ impl fmt::Display for NarInfo {
         self.references.iter().try_for_each(|d| write!(f, " {d}"))?;
         writeln!(f)?;
 
-        write!(f, "Sig: {}", self.signature)?;
+        if let Some(ref signature) = self.signature {
+            write!(f, "Sig: {}", signature)?;
+        }
 
         Ok(())
     }
@@ -132,8 +142,8 @@ impl FromStr for NarInfo {
                             Self::Err::InvalidFieldValue("NarSize".to_owned(), e.to_string())
                         })?)
                     }
-                    "Deriver" => nar_info_builder.deriver(value),
-                    "System" => nar_info_builder.system(value),
+                    "Deriver" => nar_info_builder.deriver(Some(value.into())),
+                    "System" => nar_info_builder.system(Some(value.into())),
                     "References" => nar_info_builder.references(
                         value
                             .split_whitespace()
@@ -141,7 +151,7 @@ impl FromStr for NarInfo {
                             .collect::<Result<Vec<_>, _>>()
                             .map_err(Self::Err::InvalidReference)?,
                     ),
-                    "Sig" => nar_info_builder.signature(value),
+                    "Sig" => nar_info_builder.signature(Some(value.into())),
                     _ => return Err(Self::Err::UnknownField(line.to_owned())),
                 };
             } else {
@@ -165,7 +175,6 @@ impl TryFrom<&str> for NarInfo {
 pub struct NarFile {
     pub hash: Hash,
     pub compression: CompressionType,
-    pub path: Option<String>,
 }
 
 impl fmt::Display for NarFile {
@@ -224,15 +233,6 @@ pub struct Hash {
     pub string: String,
 }
 
-impl Hash {
-    pub fn into_no_method(self) -> Self {
-        Self {
-            method: None,
-            string: self.string,
-        }
-    }
-}
-
 impl fmt::Display for Hash {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let Self { method, string } = self;
@@ -260,7 +260,8 @@ impl FromStr for Hash {
         let (method, string) = match s.split_once(':') {
             None => (None, s),
             Some((_, "")) => return Err(Self::Err::MissingHash),
-            Some((m, s)) => (Some(HashMethod::from(m)), s),
+            Some(("", hs)) => (None, hs),
+            Some((m, hs)) => (Some(HashMethod::from(m)), hs),
         };
 
         if !string.chars().all(char::is_alphanumeric) {
@@ -282,7 +283,7 @@ impl TryFrom<&str> for Hash {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct HashMethod(String);
 
 impl HashMethod {
@@ -373,5 +374,21 @@ impl fmt::Display for CompressionType {
         match self {
             Self::Xz => write!(f, "xz"),
         }
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Upstream {
+    pub url: url::Url,
+    #[serde(default)]
+    pub prioriy: Priority,
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+pub struct Priority(u32);
+
+impl Default for Priority {
+    fn default() -> Self {
+        Self(40)
     }
 }

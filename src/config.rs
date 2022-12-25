@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 use url::Url;
 
-use crate::nix::Channel;
+use crate::nix;
 
 pub fn get() -> Config {
     tracing::info!("Reading config from env");
@@ -31,41 +31,27 @@ pub fn get() -> Config {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Config {
-    pub upstreams: Vec<Upstream>,
+    pub upstreams: Vec<nix::Upstream>,
 
     pub channel_url: Url,
-    pub channels: Vec<Channel>,
+    pub channels: Vec<nix::Channel>,
 
     pub local_data_path: PathBuf,
+    pub database_max_connections: u32,
 }
 
 impl Default for Config {
     fn default() -> Self {
         Self {
-            upstreams: vec![Upstream {
+            upstreams: vec![nix::Upstream {
                 url: Url::parse("https://cache.nixos.org/").unwrap(),
-                prioriy: Priority::default(),
+                prioriy: nix::Priority::default(),
             }],
             channel_url: Url::parse("https://channels.nixos.org/").unwrap(),
-            channels: vec![Channel::NixpkgsUnstable()],
+            channels: vec![nix::Channel::NixpkgsUnstable()],
             local_data_path: ".".into(),
+            database_max_connections: 20,
         }
-    }
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct Upstream {
-    pub url: Url,
-    #[serde(default)]
-    pub prioriy: Priority,
-}
-
-#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
-pub struct Priority(u32);
-
-impl Default for Priority {
-    fn default() -> Self {
-        Self(40)
     }
 }
 

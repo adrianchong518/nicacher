@@ -1,11 +1,11 @@
+use std::io;
 use std::path::Path;
 use std::str::FromStr as _;
-use std::{fmt, io};
 
 use anyhow::Context as _;
 use futures::{stream, StreamExt as _};
 
-use crate::{config, nix};
+use crate::{cache, config, nix};
 
 pub async fn request_store_paths(channel: &str) -> anyhow::Result<Vec<nix::StorePath>> {
     let store_paths_url = format!("https://channels.nixos.org/{channel}/store-paths.xz");
@@ -26,7 +26,7 @@ pub async fn request_store_paths(channel: &str) -> anyhow::Result<Vec<nix::Store
 pub async fn request_nar_info_raw(
     config: &config::Config,
     hash: &nix::Hash,
-) -> anyhow::Result<reqwest::Response> {
+) -> anyhow::Result<(reqwest::Response, nix::Upstream)> {
     let stream = stream::iter(config.upstreams.iter()).filter_map(|upstream| async {
         let url = upstream
             .url
@@ -40,12 +40,14 @@ pub async fn request_nar_info_raw(
             })
             .ok()?;
 
-        (|| async { reqwest::get(url.clone()).await?.error_for_status() })()
+        let res = (|| async { reqwest::get(url.clone()).await?.error_for_status() })()
             .await
             .map_err(|e| {
                 tracing::warn!("Failed to request {}.narinfo from {url}: {e}", hash.string,);
             })
-            .ok()
+            .ok()?;
+
+        Some((res, upstream.clone()))
     });
     futures::pin_mut!(stream);
 
@@ -55,86 +57,51 @@ pub async fn request_nar_info_raw(
     ))
 }
 
+#[tracing::instrument(skip(config))]
 pub async fn request_nar_info(
     config: &config::Config,
     hash: &nix::Hash,
-) -> anyhow::Result<nix::NarInfo> {
-    let nar_info_text = request_nar_info_raw(config, hash).await?.text().await?;
-    nix::NarInfo::from_str(&nar_info_text)
-        .with_context(|| format!("Failed to parse narinfo when fetching {hash}"))
+) -> anyhow::Result<(nix::NarInfo, nix::Upstream)> {
+    let (res, upstream) = request_nar_info_raw(config, hash).await?;
+    let nar_info = nix::NarInfo::from_str(&res.text().await?)
+        .with_context(|| format!("Failed to parse narinfo when fetching {hash}"))?;
+
+    Ok((nar_info, upstream))
 }
 
-#[tracing::instrument(skip(config))]
-pub async fn download_nar_info(
-    config: &config::Config,
-    hash: &nix::Hash,
-    file_path: impl AsRef<Path> + fmt::Debug,
-) -> anyhow::Result<()> {
-    let nar_info_bytes = request_nar_info_raw(config, hash).await?.bytes().await?;
-
-    tracing::debug!(
-        "Writing contents of {}.narinfo to {}",
-        hash.string,
-        file_path.as_ref().display()
-    );
-
-    write_bytes_to_file(nar_info_bytes, &file_path)
-        .await
-        .with_context(|| {
-            format!(
-                "Failed to write narinfo ({hash}) to {}",
-                file_path.as_ref().display()
-            )
-        })
-}
-
-#[tracing::instrument(skip(config))]
+#[tracing::instrument]
 pub async fn request_nar_file_raw(
-    config: &config::Config,
+    upstream: &nix::Upstream,
     url_path: &str,
 ) -> anyhow::Result<reqwest::Response> {
-    let stream = stream::iter(config.upstreams.iter()).filter_map(|upstream| async {
-        let url = upstream
-            .url
-            .join(url_path)
-            .map_err(|e| {
-                tracing::warn!(
-                    "Failed to build nar file url with {} and {}: {e}",
-                    upstream.url,
-                    url_path
-                );
-            })
-            .ok()?;
+    let url = upstream.url.join(url_path)?;
 
-        (|| async { reqwest::get(url.clone()).await?.error_for_status() })()
-            .await
-            .map_err(|e| {
-                tracing::warn!("Failed to request {url_path} from {url}: {e}");
-            })
-            .ok()
-    });
-    futures::pin_mut!(stream);
-
-    stream.next().await.ok_or(anyhow::anyhow!(
-        "Failed to request {url_path} from all upstreams"
-    ))
+    reqwest::get(url.clone())
+        .await?
+        .error_for_status()
+        .with_context(|| format!("Failed to request nar file from {url}"))
 }
 
 #[tracing::instrument(skip(config))]
 pub async fn download_nar_file(
     config: &config::Config,
-    url_path: &str,
-    file_path: impl AsRef<Path> + fmt::Debug,
+    upstream: &nix::Upstream,
+    nar_info: &nix::NarInfo,
 ) -> anyhow::Result<()> {
-    let nar_file_bytes = request_nar_file_raw(config, url_path)
+    let nar_file_bytes = request_nar_file_raw(upstream, &nar_info.url)
         .await?
         .bytes()
         .await?;
 
+    let file_path = config
+        .local_data_path
+        .join(cache::NAR_FILE_DIR)
+        .join(nar_info.nar_filename());
+
     tracing::debug!(
         "Writing contents of {} to {}",
-        url_path,
-        file_path.as_ref().display()
+        nar_info.url,
+        file_path.display()
     );
 
     write_bytes_to_file(&nar_file_bytes, &file_path)
@@ -142,8 +109,8 @@ pub async fn download_nar_file(
         .with_context(|| {
             format!(
                 "Failed to write narfile ({}) to {}",
-                url_path,
-                file_path.as_ref().display()
+                nar_info.url,
+                file_path.display()
             )
         })
 }
@@ -177,25 +144,18 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    async fn download_nar_info_test() -> anyhow::Result<()> {
-        download_nar_info(
-            &config::Config::default(),
-            &nix::Hash::try_from("0006a1aaikgmpqsn5354wi6hibadiwp4").unwrap(),
-            "out/test/0006a1aaikgmpqsn5354wi6hibadiwp4.narinfo",
-        )
-        .await
-    }
-
-    #[tokio::test]
     async fn download_nar_file_test() -> anyhow::Result<()> {
-        let config = config::Config::default();
+        let config = config::Config {
+            local_data_path: "./out/test".into(),
+            ..Default::default()
+        };
 
-        let nar_info = request_nar_info(
+        let (nar_info, upstream) = request_nar_info(
             &config,
             &nix::Hash::try_from("0006a1aaikgmpqsn5354wi6hibadiwp4").unwrap(),
         )
         .await?;
 
-        download_nar_file(&config, &nar_info.url, format!("out/test/{}", nar_info.url)).await
+        download_nar_file(&config, &upstream, &nar_info).await
     }
 }
