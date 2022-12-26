@@ -51,13 +51,10 @@ impl CacheDatabasePool {
     pub async fn get_nar_info(&self, hash: &nix::Hash) -> anyhow::Result<Option<nix::NarInfo>> {
         tracing::info!("Getting {}.narinfo from cache database", hash.string);
 
-        let entry = sqlx::query_as!(
-            NarInfoEntry,
-            "SELECT * FROM narinfo WHERE hash = ?1",
-            hash.string
-        )
-        .fetch_optional(&self.0)
-        .await?;
+        let entry: Option<NarInfoEntry> = sqlx::query_as("SELECT * FROM narinfo WHERE hash = ?1")
+            .bind(&hash.string)
+            .fetch_optional(&self.0)
+            .await?;
 
         if let Some(entry) = entry {
             tracing::debug!("Found narinfo entry in database");
@@ -87,41 +84,37 @@ impl CacheDatabasePool {
                 hash.string
             );
 
-            sqlx::query!(
-                "REPLACE INTO narinfo VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                entry.hash,
-                entry.store_path,
-                entry.compression,
-                entry.file_hash_method,
-                entry.file_hash,
-                entry.file_size,
-                entry.nar_hash_method,
-                entry.nar_hash,
-                entry.nar_size,
-                entry.deriver,
-                entry.system,
-                entry.refs,
-                entry.signature,
-            )
+            sqlx::query("REPLACE INTO narinfo VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)")
+                .bind(entry.hash)
+                .bind(entry.store_path)
+                .bind(entry.compression)
+                .bind(entry.file_hash_method)
+                .bind(entry.file_hash)
+                .bind(entry.file_size)
+                .bind(entry.nar_hash_method)
+                .bind(entry.nar_hash)
+                .bind(entry.nar_size)
+                .bind(entry.deriver)
+                .bind(entry.system)
+                .bind(entry.refs)
+                .bind(entry.signature)
         } else {
             tracing::info!("Inserting {}.narinfo into cache database", hash.string);
 
-            sqlx::query!(
-                "INSERT INTO narinfo VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                entry.hash,
-                entry.store_path,
-                entry.compression,
-                entry.file_hash_method,
-                entry.file_hash,
-                entry.file_size,
-                entry.nar_hash_method,
-                entry.nar_hash,
-                entry.nar_size,
-                entry.deriver,
-                entry.system,
-                entry.refs,
-                entry.signature,
-            )
+            sqlx::query("INSERT INTO narinfo VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)")
+                .bind(entry.hash)
+                .bind(entry.store_path)
+                .bind(entry.compression)
+                .bind(entry.file_hash_method)
+                .bind(entry.file_hash)
+                .bind(entry.file_size)
+                .bind(entry.nar_hash_method)
+                .bind(entry.nar_hash)
+                .bind(entry.nar_size)
+                .bind(entry.deriver)
+                .bind(entry.system)
+                .bind(entry.refs)
+                .bind(entry.signature)
         }
         .execute(&self.0)
         .await?;
@@ -131,7 +124,8 @@ impl CacheDatabasePool {
 
     pub async fn is_nar_info_cached(&self, hash: &nix::Hash) -> anyhow::Result<bool> {
         Ok(
-            sqlx::query_scalar!("SELECT 1 FROM narinfo WHERE hash = ?", hash.string)
+            sqlx::query_scalar::<_, i64>("SELECT 1 FROM narinfo WHERE hash = ?")
+                .bind(&hash.string)
                 .fetch_optional(&self.0)
                 .await?
                 .is_some(),
@@ -139,13 +133,11 @@ impl CacheDatabasePool {
     }
 
     pub async fn is_nar_file_cached(&self, nar_file: &nix::NarFile) -> anyhow::Result<bool> {
-        let compression = nar_file.compression.to_string();
-
-        Ok(sqlx::query_scalar!(
+        Ok(sqlx::query_scalar::<_, i64>(
             "SELECT 1 FROM narinfo WHERE file_hash = ? AND compression = ?",
-            nar_file.hash.string,
-            compression
         )
+        .bind(&nar_file.hash.string)
+        .bind(nar_file.compression.to_string())
         .fetch_optional(&self.0)
         .await?
         .is_some())
@@ -153,7 +145,7 @@ impl CacheDatabasePool {
 }
 
 #[allow(dead_code)]
-#[derive(Debug)]
+#[derive(Debug, sqlx::FromRow)]
 struct NarInfoEntry {
     hash: String,
     store_path: String,
