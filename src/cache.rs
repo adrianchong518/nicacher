@@ -1,24 +1,29 @@
 use std::str::FromStr;
 
+use futures::{StreamExt as _, TryStreamExt as _};
+
 use crate::{config, nix};
 
 pub const NAR_FILE_DIR: &str = "nar";
 pub const CACHE_DB_PATH: &str = "cache.db";
 
 #[derive(Clone, Debug)]
-pub struct CacheDatabasePool(sqlx::SqlitePool);
+pub struct Cache {
+    db_pool: sqlx::SqlitePool,
+}
 
-impl CacheDatabasePool {
-    pub async fn new(config: &config::Config) -> anyhow::Result<CacheDatabasePool> {
-        tracing::trace!("Creating directory structure in data path");
-        tokio::fs::create_dir_all(config.local_data_path.join(NAR_FILE_DIR)).await?;
+impl Cache {
+    pub async fn new(config: &config::Config) -> anyhow::Result<Cache> {
+        {
+            tracing::trace!("Creating directory structure in data path");
+            tokio::fs::create_dir_all(config.local_data_path.join(NAR_FILE_DIR)).await?;
+        }
 
         tracing::info!("Establishing connection to SQLite cache database");
-        let cache_db_pool = {
+        let cache = {
             use sqlx::sqlite::{
                 SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous,
             };
-            use std::str::FromStr as _;
 
             let database_url = format!(
                 "sqlite://{}",
@@ -30,35 +35,40 @@ impl CacheDatabasePool {
                 .journal_mode(SqliteJournalMode::Wal)
                 .synchronous(SqliteSynchronous::Normal);
 
-            let cache_db_pool = SqlitePoolOptions::new()
+            let db_pool = SqlitePoolOptions::new()
                 .max_connections(config.database_max_connections)
                 .connect_with(connection_options)
                 .await?;
 
             tracing::debug!("Migrating cache database");
             sqlx::query("PRAGMA temp_store = MEMORY;")
-                .execute(&cache_db_pool)
+                .execute(&db_pool)
                 .await?;
-            sqlx::migrate!().run(&cache_db_pool).await?;
+            sqlx::migrate!().run(&db_pool).await?;
 
-            CacheDatabasePool(cache_db_pool)
+            Cache { db_pool }
         };
 
-        Ok(cache_db_pool)
+        Ok(cache)
+    }
+
+    pub async fn cleanup(self) {
+        self.db_pool.close().await;
     }
 
     #[tracing::instrument]
     pub async fn get_nar_info(&self, hash: &nix::Hash) -> anyhow::Result<Option<nix::NarInfo>> {
         tracing::info!("Getting {}.narinfo from cache database", hash.string);
 
-        let entry: Option<NarInfoEntry> = sqlx::query_as("SELECT * FROM narinfo WHERE hash = ?1")
-            .bind(&hash.string)
-            .fetch_optional(&self.0)
-            .await?;
+        let entry: Option<NarInfoEntry> =
+            sqlx::query_as("SELECT * FROM narinfo_view WHERE hash = ?1")
+                .bind(&hash.string)
+                .fetch_optional(&self.db_pool)
+                .await?;
 
         if let Some(entry) = entry {
             tracing::debug!("Found narinfo entry in database");
-            Ok(Some(nix::NarInfo::try_from(entry)?))
+            Ok(Some(nix::NarInfo::try_from(&entry)?))
         } else {
             tracing::debug!(
                 "Unable to find entry for {}.narinfo in database",
@@ -78,55 +88,64 @@ impl CacheDatabasePool {
     ) -> anyhow::Result<()> {
         let entry = NarInfoEntry::from_nar_info(hash, nar_info);
 
-        if force {
+        let query_str = if force {
             tracing::info!(
                 "Forcefully REPLACING {}.narinfo in cache database",
                 hash.string
             );
 
-            sqlx::query("REPLACE INTO narinfo VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)")
-                .bind(entry.hash)
-                .bind(entry.store_path)
-                .bind(entry.compression)
-                .bind(entry.file_hash_method)
-                .bind(entry.file_hash)
-                .bind(entry.file_size)
-                .bind(entry.nar_hash_method)
-                .bind(entry.nar_hash)
-                .bind(entry.nar_size)
-                .bind(entry.deriver)
-                .bind(entry.system)
-                .bind(entry.refs)
-                .bind(entry.signature)
+            "REPLACE INTO cache VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)"
         } else {
             tracing::info!("Inserting {}.narinfo into cache database", hash.string);
 
-            sqlx::query("INSERT INTO narinfo VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)")
-                .bind(entry.hash)
-                .bind(entry.store_path)
-                .bind(entry.compression)
-                .bind(entry.file_hash_method)
-                .bind(entry.file_hash)
-                .bind(entry.file_size)
-                .bind(entry.nar_hash_method)
-                .bind(entry.nar_hash)
-                .bind(entry.nar_size)
-                .bind(entry.deriver)
-                .bind(entry.system)
-                .bind(entry.refs)
-                .bind(entry.signature)
-        }
-        .execute(&self.0)
-        .await?;
+            "INSERT INTO cache VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)"
+        };
+
+        sqlx::query(query_str)
+            .bind(entry.hash)
+            .bind(entry.store_path)
+            .bind(entry.compression)
+            .bind(entry.file_hash_method)
+            .bind(entry.file_hash)
+            .bind(entry.file_size)
+            .bind(entry.nar_hash_method)
+            .bind(entry.nar_hash)
+            .bind(entry.nar_size)
+            .bind(entry.deriver)
+            .bind(entry.system)
+            .bind(entry.refs)
+            .bind(entry.signature)
+            .execute(&self.db_pool)
+            .await?;
 
         Ok(())
     }
 
+    pub async fn get_store_paths<T>(&self) -> anyhow::Result<T>
+    where
+        T: Extend<nix::StorePath> + Default,
+    {
+        tracing::info!("Getting all cached store paths");
+
+        Ok(
+            sqlx::query_scalar::<_, String>("SELECT store_path FROM cache")
+                .fetch(&self.db_pool)
+                .map(|path_opt| -> anyhow::Result<_> {
+                    match path_opt {
+                        Ok(path) => Ok(nix::StorePath::from_str(&path)?),
+                        Err(err) => Err(err.into()),
+                    }
+                })
+                .try_collect::<T>()
+                .await?,
+        )
+    }
+
     pub async fn is_nar_info_cached(&self, hash: &nix::Hash) -> anyhow::Result<bool> {
         Ok(
-            sqlx::query_scalar::<_, i64>("SELECT 1 FROM narinfo WHERE hash = ?")
+            sqlx::query_scalar::<_, i64>("SELECT 1 FROM cache WHERE hash = ?")
                 .bind(&hash.string)
-                .fetch_optional(&self.0)
+                .fetch_optional(&self.db_pool)
                 .await?
                 .is_some(),
         )
@@ -134,11 +153,11 @@ impl CacheDatabasePool {
 
     pub async fn is_nar_file_cached(&self, nar_file: &nix::NarFile) -> anyhow::Result<bool> {
         Ok(sqlx::query_scalar::<_, i64>(
-            "SELECT 1 FROM narinfo WHERE file_hash = ? AND compression = ?",
+            "SELECT 1 FROM cache WHERE file_hash = ? AND compression = ?",
         )
         .bind(&nar_file.hash.string)
         .bind(nar_file.compression.to_string())
-        .fetch_optional(&self.0)
+        .fetch_optional(&self.db_pool)
         .await?
         .is_some())
     }
@@ -165,8 +184,8 @@ struct NarInfoEntry {
 impl NarInfoEntry {
     fn from_nar_info(hash: &nix::Hash, nar_info: &nix::NarInfo) -> Self {
         Self {
-            hash: hash.to_string(),
-            store_path: nar_info.store_path.path.to_string_lossy().to_string(),
+            hash: hash.string.clone(),
+            store_path: nar_info.store_path.path().to_string_lossy().to_string(),
             compression: nar_info.compression.to_string(),
             file_hash_method: nar_info
                 .file_hash
@@ -196,10 +215,10 @@ impl NarInfoEntry {
     }
 }
 
-impl TryFrom<NarInfoEntry> for nix::NarInfo {
+impl TryFrom<&NarInfoEntry> for nix::NarInfo {
     type Error = <nix::NarInfo as FromStr>::Err;
 
-    fn try_from(value: NarInfoEntry) -> Result<Self, Self::Error> {
+    fn try_from(value: &NarInfoEntry) -> Result<Self, Self::Error> {
         use nix::{CompressionType, Derivation, Hash, StorePath};
 
         let file_hash = format!("{}:{}", value.file_hash_method, value.file_hash)
@@ -227,8 +246,8 @@ impl TryFrom<NarInfoEntry> for nix::NarInfo {
                     })?,
             )
             .nar_size(value.nar_size as usize)
-            .deriver(value.deriver)
-            .system(value.system)
+            .deriver(value.deriver.clone())
+            .system(value.system.clone())
             .references(
                 value
                     .refs
@@ -237,7 +256,7 @@ impl TryFrom<NarInfoEntry> for nix::NarInfo {
                     .collect::<Result<Vec<_>, _>>()
                     .map_err(Self::Error::InvalidReference)?,
             )
-            .signature(value.signature)
+            .signature(value.signature.clone())
             .build()
             .map_err(Self::Error::MissingField)
     }

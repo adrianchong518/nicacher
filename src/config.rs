@@ -3,14 +3,14 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 use url::Url;
 
+use anyhow::Context as _;
+
 use crate::nix;
 
 pub fn get() -> Config {
     tracing::info!("Reading config from env");
 
     let config = (|| -> anyhow::Result<Config> {
-        use anyhow::Context as _;
-
         let config_path = std::env::var("NICACHER_CONFIG")?;
         let config_str = std::fs::read_to_string(&config_path)
             .with_context(|| format!("Unable to read config from {config_path:?}"))?;

@@ -7,7 +7,7 @@ use crate::{cache, config, fetch, nix};
 
 pub async fn init<'a>(
     config: &'a config::Config,
-    cache_db_pool: &'a cache::CacheDatabasePool,
+    cache: &'a cache::Cache,
 ) -> (
     impl std::future::Future<Output = io::Result<()>> + 'a,
     apalis::sqlite::SqliteStorage<Jobs>,
@@ -59,7 +59,7 @@ pub async fn init<'a>(
                     WorkerBuilder::new(storage.clone())
                         .layer(TraceLayer::new().make_span_with(custom_make_span))
                         .layer(Extension(config.clone()))
-                        .layer(Extension(cache_db_pool.clone()))
+                        .layer(Extension(cache.clone()))
                         .build_fn(dispatch_jobs)
                 })
                 // .register(cron_worker)
@@ -82,21 +82,18 @@ impl Job for Jobs {
 
 async fn dispatch_jobs(job: Jobs, ctx: JobContext) -> Result<JobResult, JobError> {
     let config = ctx.data_opt::<config::Config>().unwrap();
-    let cache_db_pool = ctx.data_opt::<cache::CacheDatabasePool>().unwrap();
+    let cache = ctx.data_opt::<cache::Cache>().unwrap();
 
     match job {
-        Jobs::CacheNar {
-            hash,
-            is_force: force,
-        } => {
+        Jobs::CacheNar { hash, is_force } => {
             tracing::info!("Caching {}.narinfo and corresponding nar file", hash.string);
 
-            if !force
-                && cache_db_pool.is_nar_info_cached(&hash).await.map_err(|e| {
-                    tracing::error!("When checking cache status: {e}");
-                    JobError::Unknown
-                })?
-            {
+            let is_cached = cache.is_nar_info_cached(&hash).await.map_err(|e| {
+                tracing::error!("When checking cache status: {e}");
+                JobError::Unknown
+            })?;
+
+            if !is_force && is_cached {
                 tracing::warn!(
                     "{}.narinfo is already cached, skipping insertion",
                     hash.string
@@ -111,15 +108,15 @@ async fn dispatch_jobs(job: Jobs, ctx: JobContext) -> Result<JobResult, JobError
                     JobError::Unknown
                 })?;
 
-            cache_db_pool
-                .insert_nar_info(&hash, &nar_info, force)
+            cache
+                .insert_nar_info(&hash, &nar_info, is_force)
                 .await
                 .map_err(|e| {
                     tracing::error!("Error when inserting narinfo into cache database: {e}",);
                     JobError::Unknown
                 })?;
 
-            fetch::download_nar_file(&config, &upstream, &nar_info)
+            fetch::download_nar_file(config, &upstream, &nar_info)
                 .await
                 .map_err(|e| {
                     tracing::error!("Error when downloading nar file: {e}");

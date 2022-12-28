@@ -1,29 +1,55 @@
 use std::io;
 use std::path::Path;
+
 use std::str::FromStr as _;
 
+use futures::stream;
+
 use anyhow::Context as _;
-use futures::{stream, StreamExt as _};
+use futures::StreamExt as _;
 
 use crate::{cache, config, nix};
 
-pub async fn request_store_paths(channel: &str) -> anyhow::Result<Vec<nix::StorePath>> {
-    let store_paths_url = format!("https://channels.nixos.org/{channel}/store-paths.xz");
-    let res = reqwest::get(&store_paths_url)
+const STORE_PATHS_FILE: &str = "store-paths.xz";
+
+#[tracing::instrument(skip(config))]
+pub async fn request_store_paths<T>(
+    config: &config::Config,
+    channel: &nix::Channel,
+) -> anyhow::Result<T>
+where
+    T: std::iter::FromIterator<nix::StorePath>,
+{
+    tracing::info!("Requesting store paths of {channel}");
+
+    let store_paths_url = config
+        .channel_url
+        .join(&format!("{channel}/{STORE_PATHS_FILE}"))
+        .with_context(|| {
+            format!(
+                "Failed to build store paths url with {}, {channel} and {STORE_PATHS_FILE}",
+                config.channel_url,
+            )
+        })?;
+
+    tracing::debug!("Fetching newest store paths list from {store_paths_url}");
+
+    let res = reqwest::get(store_paths_url.clone())
         .await?
         .error_for_status()
-        .with_context(|| format!("Failed to get store paths from {channel}"))?;
+        .with_context(|| format!("Failed to get store paths from {channel} ({store_paths_url})"))?;
+
+    tracing::debug!("Decoding received {store_paths_url}");
 
     decode_xz_to_string(&res.bytes().await?)?
         .trim()
-        .split('\n')
+        .lines()
         .map(nix::StorePath::from_str)
-        .collect::<Result<Vec<_>, _>>()
+        .collect::<Result<T, _>>()
         .map_err(anyhow::Error::from)
 }
 
-#[tracing::instrument(skip(config))]
-pub async fn request_nar_info_raw(
+async fn request_nar_info_raw(
     config: &config::Config,
     hash: &nix::Hash,
 ) -> anyhow::Result<(reqwest::Response, nix::Upstream)> {
@@ -51,10 +77,12 @@ pub async fn request_nar_info_raw(
     });
     futures::pin_mut!(stream);
 
-    stream.next().await.ok_or(anyhow::anyhow!(
-        "Failed to request {}.narinfo from all upstreams",
-        hash.string
-    ))
+    stream.next().await.ok_or_else(|| {
+        anyhow::anyhow!(
+            "Failed to request {}.narinfo from all upstreams",
+            hash.string
+        )
+    })
 }
 
 #[tracing::instrument(skip(config))]
@@ -62,6 +90,8 @@ pub async fn request_nar_info(
     config: &config::Config,
     hash: &nix::Hash,
 ) -> anyhow::Result<(nix::NarInfo, nix::Upstream)> {
+    tracing::info!("Requesting {}.narinfo from upstream", hash.string);
+
     let (res, upstream) = request_nar_info_raw(config, hash).await?;
     let nar_info = nix::NarInfo::from_str(&res.text().await?)
         .with_context(|| format!("Failed to parse narinfo when fetching {hash}"))?;
@@ -69,8 +99,7 @@ pub async fn request_nar_info(
     Ok((nar_info, upstream))
 }
 
-#[tracing::instrument]
-pub async fn request_nar_file_raw(
+async fn request_nar_file_raw(
     upstream: &nix::Upstream,
     url_path: &str,
 ) -> anyhow::Result<reqwest::Response> {
@@ -82,12 +111,14 @@ pub async fn request_nar_file_raw(
         .with_context(|| format!("Failed to request nar file from {url}"))
 }
 
-#[tracing::instrument(skip(config))]
+#[tracing::instrument(skip_all, fields(nar_info_url = nar_info.url.to_string(), upstream_url = upstream.url.to_string()))]
 pub async fn download_nar_file(
     config: &config::Config,
     upstream: &nix::Upstream,
     nar_info: &nix::NarInfo,
 ) -> anyhow::Result<()> {
+    tracing::info!("Downloading {} from {}", nar_info.url, upstream.url);
+
     let nar_file_bytes = request_nar_file_raw(upstream, &nar_info.url)
         .await?
         .bytes()

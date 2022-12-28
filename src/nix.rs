@@ -46,14 +46,15 @@ impl fmt::Display for NarInfo {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            r#"StorePath: {}
+            "\
+StorePath: {}
 URL: {}
 Compression: {}
 FileHash: {}
 FileSize: {}
 NarHash: {}
 NarSize: {}
-"#,
+",
             self.store_path,
             self.url,
             self.compression,
@@ -108,7 +109,7 @@ impl FromStr for NarInfo {
         let mut nar_info_builder = NarInfoBuilder::default();
 
         for line in s.lines() {
-            if let Some((key, value)) = line.split_once(":") {
+            if let Some((key, value)) = line.split_once(':') {
                 let key = key.trim();
                 let value = value.trim();
 
@@ -189,6 +190,12 @@ pub struct Derivation {
     pub hash: Hash,
 }
 
+impl Derivation {
+    pub fn name(&self) -> String {
+        format!("{}-{}", self.hash.string, self.package)
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum DerivationParseError {
     #[error("Invalid derivation name format")]
@@ -215,7 +222,7 @@ impl FromStr for Derivation {
 
 impl fmt::Display for Derivation {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}-{}", self.hash, self.package)
+        write!(f, "{}", self.name())
     }
 }
 
@@ -225,6 +232,16 @@ pub struct Channel(String);
 impl Channel {
     string_newtype_variant!(NixosUnstable, "nixos-unstable");
     string_newtype_variant!(NixpkgsUnstable, "nixpkgs-unstable");
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Display for Channel {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.0)
+    }
 }
 
 #[derive(Clone, Debug, SerializeDisplay, DeserializeFromStr)]
@@ -304,8 +321,14 @@ impl From<&str> for HashMethod {
 
 #[derive(Clone, Debug)]
 pub struct StorePath {
-    pub path: PathBuf,
+    pub store_path_root: PathBuf,
     pub derivation: Derivation,
+}
+
+impl StorePath {
+    pub fn path(&self) -> PathBuf {
+        self.store_path_root.join(self.derivation.name())
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -320,6 +343,11 @@ impl TryFrom<&Path> for StorePath {
     type Error = StorePathParseError;
 
     fn try_from(path: &Path) -> Result<Self, Self::Error> {
+        let store_path_root = path
+            .parent()
+            .ok_or_else(|| StorePathParseError::InvalidPath(path.to_owned()))?
+            .to_owned();
+
         let derivation = path
             .file_name()
             .and_then(std::ffi::OsStr::to_str)
@@ -328,7 +356,7 @@ impl TryFrom<&Path> for StorePath {
             .map_err(StorePathParseError::InvalidDerivation)?;
 
         Ok(StorePath {
-            path: path.to_owned(),
+            store_path_root,
             derivation,
         })
     }
@@ -344,7 +372,27 @@ impl FromStr for StorePath {
 
 impl fmt::Display for StorePath {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.path.display())
+        write!(f, "{}", self.path().display())
+    }
+}
+
+impl PartialEq for StorePath {
+    fn eq(&self, other: &Self) -> bool {
+        self.path() == other.path()
+    }
+}
+
+impl Eq for StorePath {}
+
+impl PartialOrd for StorePath {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        self.path().partial_cmp(&other.path())
+    }
+}
+
+impl Ord for StorePath {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.path().cmp(&other.path())
     }
 }
 
