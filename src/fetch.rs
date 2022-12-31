@@ -124,10 +124,7 @@ pub async fn download_nar_file(
         .bytes()
         .await?;
 
-    let file_path = config
-        .local_data_path
-        .join(cache::NAR_FILE_DIR)
-        .join(nar_info.nar_filename());
+    let file_path = cache::nar_file_path(config, nar_info);
 
     tracing::debug!(
         "Writing contents of {} to {}",

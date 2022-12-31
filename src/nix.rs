@@ -36,12 +36,6 @@ pub struct NarInfo {
     pub signature: Option<String>,
 }
 
-impl NarInfo {
-    pub fn nar_filename(&self) -> String {
-        format!("{}.nar.{}", self.file_hash.string, self.compression)
-    }
-}
-
 impl fmt::Display for NarInfo {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
@@ -53,8 +47,7 @@ Compression: {}
 FileHash: {}
 FileSize: {}
 NarHash: {}
-NarSize: {}
-",
+NarSize: {}",
             self.store_path,
             self.url,
             self.compression,
@@ -268,6 +261,22 @@ pub enum HashParseError {
     MissingHash,
     #[error("Hash string contains non-alphanumeric characters")]
     HashNonAlphanumeric,
+}
+
+impl Hash {
+    pub fn from_hash(string: String) -> Self {
+        Self {
+            method: None,
+            string,
+        }
+    }
+
+    pub fn from_method_hash(method: String, string: String) -> Self {
+        Self {
+            method: Some(HashMethod(method)),
+            string,
+        }
+    }
 }
 
 impl FromStr for Hash {

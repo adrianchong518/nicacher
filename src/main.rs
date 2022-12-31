@@ -11,6 +11,8 @@ use apalis::prelude::*;
 use apalis::sqlite::SqliteStorage;
 use serde::Deserialize;
 
+// TODO: Add cache status check endpoints
+
 const PKG_NAME: &str = env!("CARGO_PKG_NAME");
 
 #[actix_web::main]
@@ -64,7 +66,10 @@ async fn main() -> io::Result<()> {
             .service(get_nar_info)
             .service(get_nar_file)
             .service(cache_nar)
+            .service(purge_nar)
             .service(list_cache_diff)
+            .service(cache_size)
+            .service(nar_status)
     })
     .bind(("0.0.0.0", 8080))?
     .run();
@@ -100,7 +105,7 @@ async fn get_nar_info(
 
     tracing::info!("Request for {}.narinfo", hash.string);
 
-    match cache.get_nar_info(&hash).await {
+    match cache::get_nar_info(cache.db_pool(), &hash).await {
         Ok(Some(nar_info)) => HttpResponse::Ok()
             .content_type(ContentType(nix::NARINFO_MIME.parse().unwrap()))
             .body(nar_info.to_string()),
@@ -116,20 +121,22 @@ async fn get_nar_info(
                     HttpResponse::NotFound().body(format!("{}.narinfo unavaliable", hash.string))
                 }
                 Err(err) => {
-                    tracing::error!("Failed to push {job:?}: {err}");
-                    HttpResponse::InternalServerError().body(format!(
+                    let res = format!(
                         "Failed to request caching of {}.narinfo due to internal error: {err}",
                         hash.string
-                    ))
+                    );
+                    tracing::error!("{res}");
+                    HttpResponse::InternalServerError().body(res)
                 }
             }
         }
         Err(err) => {
-            tracing::error!("Failed to get narinfo due to internal error: {err}");
-            HttpResponse::InternalServerError().body(format!(
+            let res = format!(
                 "Failed to get {}.narinfo due to internal error: {err}",
                 hash.string
-            ))
+            );
+            tracing::error!("{res}");
+            HttpResponse::InternalServerError().body(res)
         }
     }
 }
@@ -144,7 +151,7 @@ async fn get_nar_file(
     tracing::info!("Request for {nar_file}");
 
     (|| async {
-        if cache.is_nar_file_cached(&nar_file).await? {
+        if cache::is_nar_file_cached(cache.db_pool(), &nar_file).await? {
             Ok(actix_files::NamedFile::open_async(
                 config
                     .local_data_path
@@ -159,10 +166,49 @@ async fn get_nar_file(
     })()
     .await
     .unwrap_or_else(|err| {
-        HttpResponse::InternalServerError().body(format!(
-            "Failed to get {nar_file} due to internal error: {err}"
-        ))
+        let res = format!("Failed to get {nar_file} due to internal error: {err}");
+        tracing::error!("{res}");
+        HttpResponse::InternalServerError().body(res)
     })
+}
+
+#[get("/admin/cache_size")]
+async fn cache_size(
+    config: web::Data<config::Config>,
+    cache: web::Data<cache::Cache>,
+) -> impl Responder {
+    let disk_size = match cache::disk_size(&config).await {
+        Ok(size) => size,
+        Err(err) => {
+            let res = format!("Failed to get total cache disk size:\n{err}");
+            tracing::error!("{res}");
+            return HttpResponse::InternalServerError().body(res);
+        }
+    };
+
+    let nar_disk_size = match cache::nar_disk_size(&config).await {
+        Ok(size) => size,
+        Err(err) => {
+            let res = format!("Failed to get total cached nar file disk size:\n{err}");
+            tracing::error!("{res}");
+            return HttpResponse::InternalServerError().body(res);
+        }
+    };
+
+    let reported_size = match cache::reported_size(cache.db_pool()).await {
+        Ok(size) => size,
+        Err(err) => {
+            let res = format!("Failed to get reported cache size:\n{err}");
+            tracing::error!("{res}");
+            return HttpResponse::InternalServerError().body(res);
+        }
+    };
+
+    HttpResponse::Ok().body(format!(
+        "\
+Cache disk size: {disk_size} (nar: {nar_disk_size})
+Cache reported size: {reported_size}"
+    ))
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -189,9 +235,54 @@ async fn cache_nar(
         .await
     {
         Ok(()) => HttpResponse::Ok().body(format!("Pushed job for caching {hash} to queue")),
-        Err(e) => HttpResponse::InternalServerError().body(format!(
-            "Failed to push job for caching {hash} to queue:\n{e}"
-        )),
+        Err(e) => {
+            let res = format!("Failed to push job for caching {hash} to queue:\n{e}");
+            tracing::error!("{res}");
+            HttpResponse::InternalServerError().body(res)
+        }
+    }
+}
+
+#[get("/admin/purge_nar/{hash}")]
+async fn purge_nar(
+    hash: web::Path<nix::Hash>,
+    web::Query(IsForce { is_force }): web::Query<IsForce>,
+    cache: web::Data<cache::Cache>,
+    jobs_storage: web::Data<SqliteStorage<jobs::Jobs>>,
+) -> impl Responder {
+    let mut jobs_storage = (*jobs_storage.into_inner()).clone();
+    let hash = hash.into_inner();
+
+    match cache::is_cached_by_hash(cache.db_pool(), &hash).await {
+        Ok(false) => {
+            let res = format!("{}.narinfo is not cached", hash.string);
+            tracing::warn!("{res}");
+            return HttpResponse::NotFound().body(res);
+        }
+        Err(err) => {
+            let res = format!(
+                "Failed to get information on {}.narinfo due to internal error: {err}",
+                hash.string
+            );
+            tracing::error!("{res}");
+            return HttpResponse::InternalServerError().body(res);
+        }
+        _ => {}
+    };
+
+    match jobs_storage
+        .push(jobs::Jobs::PurgeNar {
+            hash: hash.clone(),
+            is_force,
+        })
+        .await
+    {
+        Ok(()) => HttpResponse::Ok().body(format!("Pushed job for purging {hash} to queue")),
+        Err(e) => {
+            let res = format!("Failed to push job for purging {hash} to queue:\n{e}");
+            tracing::error!("{res}");
+            HttpResponse::InternalServerError().body(res)
+        }
     }
 }
 
@@ -215,11 +306,12 @@ async fn list_cache_diff(
 ) -> impl Responder {
     use std::collections::BTreeSet;
 
-    let cached_store_paths = match cache.get_store_paths::<BTreeSet<_>>().await {
+    let cached_store_paths = match cache::get_store_paths::<_, BTreeSet<_>>(cache.db_pool()).await {
         Ok(v) => v,
         Err(e) => {
-            return HttpResponse::InternalServerError()
-                .body(format!("Failed to get cached store paths:\n{e}"))
+            let res = format!("Failed to get cached store paths:\n{e}");
+            tracing::error!("{res}");
+            return HttpResponse::InternalServerError().body(res);
         }
     };
 
@@ -227,8 +319,9 @@ async fn list_cache_diff(
         match fetch::request_store_paths::<BTreeSet<_>>(&config, &config.channels[0]).await {
             Ok(v) => v,
             Err(e) => {
-                return HttpResponse::InternalServerError()
-                    .body(format!("Failed to request up-to-date store paths:\n{e}"))
+                let res = format!("Failed to request up-to-date store paths:\n{e}");
+                tracing::error!("{res}");
+                return HttpResponse::InternalServerError().body(res);
             }
         };
 
@@ -247,8 +340,7 @@ Number of missing derivations from cache: {diff_len}
 ----------------------------------------------------
 Store paths of first {limit} of missing derivations:
 
-{}
-",
+{}",
             diff.take(limit)
                 .map(nix::StorePath::to_string)
                 .reduce(|acc, path| acc + "\n" + &path)
@@ -257,4 +349,9 @@ Store paths of first {limit} of missing derivations:
     };
 
     HttpResponse::Ok().body(res)
+}
+
+#[get("/admin/nar_status/{hash}")]
+async fn nar_status(hash: web::Path<nix::Hash>, cache: web::Data<cache::Cache>) -> impl Responder {
+    format!("{:#?}", cache::status(cache.db_pool(), &hash).await)
 }
