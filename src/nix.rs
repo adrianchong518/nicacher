@@ -7,10 +7,11 @@ use serde::{Deserialize, Serialize};
 use serde_with::{DeserializeFromStr, SerializeDisplay};
 
 pub const NARINFO_MIME: &str = "text/x-nix-narinfo";
+pub const NAR_FILE_MIME: &str = "application/x-nix-nar";
 
 macro_rules! string_newtype_variant {
     ($method_fn:ident, $method_str:expr) => {
-        #[allow(non_snake_case)]
+        #[allow(non_snake_case, dead_code)]
         pub fn $method_fn() -> Self {
             Self($method_str.to_owned())
         }
@@ -165,7 +166,7 @@ impl TryFrom<&str> for NarInfo {
     }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, DeserializeFromStr)]
 pub struct NarFile {
     pub hash: Hash,
     pub compression: CompressionType,
@@ -174,6 +175,21 @@ pub struct NarFile {
 impl fmt::Display for NarFile {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}.nar.{}", self.hash.string, self.compression)
+    }
+}
+
+impl FromStr for NarFile {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.splitn(3, '.').collect::<Vec<&str>>().as_slice() {
+            &[hash, "nar", compression] => Ok(Self {
+                hash: hash.parse()?,
+                compression: compression.parse()?,
+            }),
+
+            _ => anyhow::bail!("Invalid nar file format: {s}"),
+        }
     }
 }
 
@@ -225,10 +241,6 @@ pub struct Channel(String);
 impl Channel {
     string_newtype_variant!(NixosUnstable, "nixos-unstable");
     string_newtype_variant!(NixpkgsUnstable, "nixpkgs-unstable");
-
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
 }
 
 impl fmt::Display for Channel {

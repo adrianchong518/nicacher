@@ -83,6 +83,30 @@ impl Cache {
     }
 }
 
+#[macro_export]
+macro_rules! transaction {
+    (begin: $cache:expr) => {
+        $cache.begin_transaction().await.map_err(|e| {
+            tracing::error!("Failed to begin transaction: {e}");
+            apalis::prelude::JobError::Unknown
+        })
+    };
+
+    (commit: $tx:expr) => {
+        $tx.commit().await.map_err(|e| {
+            tracing::error!("Failed to commit transaction: {e}");
+            apalis::prelude::JobError::Unknown
+        })
+    };
+
+    (rollback: $tx:expr) => {
+        $tx.rollback().await.map_err(|e| {
+            tracing::error!("Failed to rollback transaction: {e}");
+            apalis::prelude::JobError::Unknown
+        })
+    };
+}
+
 #[tracing::instrument]
 pub async fn get_nar_info<'c, E>(
     executor: E,
@@ -95,7 +119,7 @@ where
 
     let entry = sqlx::query_as!(
         NarInfoEntry,
-        "SELECT * FROM narinfo_fields_view WHERE hash = ?1",
+        "SELECT * FROM narinfo_fields_view WHERE hash = ?1;",
         hash.string
     )
     .fetch_optional(executor)
@@ -129,7 +153,7 @@ where
 
     let entry = sqlx::query_as!(
         NarInfoWithUpstreamEntry,
-        "SELECT * FROM narinfo WHERE hash = ?1",
+        "SELECT * FROM narinfo WHERE hash = ?1;",
         hash.string
     )
     .fetch_optional(executor)
@@ -165,11 +189,17 @@ where
     tracing::info!("Getting file hash of {}.narinfo", hash.string);
 
     let entry = sqlx::query!(
-            "SELECT file_hash_method AS method, file_hash AS hash, compression FROM narinfo WHERE hash = ?1",
-            hash.string
-        )
-        .fetch_optional(executor)
-        .await?;
+        "
+        SELECT
+            file_hash_method AS method,
+            file_hash AS hash,
+            compression
+        FROM narinfo
+        WHERE hash = ?1",
+        hash.string
+    )
+    .fetch_optional(executor)
+    .await?;
 
     if let Some(entry) = entry {
         tracing::debug!("Found file hash in database");
@@ -267,16 +297,23 @@ where
 {
     tracing::info!("Getting all cached store paths");
 
-    Ok(sqlx::query_scalar!("SELECT store_path FROM narinfo")
-        .fetch(executor)
-        .map(|path_opt| -> anyhow::Result<_> {
-            match path_opt {
-                Ok(path) => Ok(nix::StorePath::from_str(&path)?),
-                Err(err) => Err(err.into()),
-            }
-        })
-        .try_collect::<T>()
-        .await?)
+    let status: i64 = Status::Available.into();
+    Ok(sqlx::query_scalar!(
+        "SELECT narinfo.store_path
+         FROM cache
+         INNER JOIN narinfo ON cache.hash = narinfo.hash
+         WHERE cache.status = ?",
+        status
+    )
+    .fetch(executor)
+    .map(|path_opt| -> anyhow::Result<_> {
+        match path_opt {
+            Ok(path) => Ok(nix::StorePath::from_str(&path)?),
+            Err(err) => Err(err.into()),
+        }
+    })
+    .try_collect::<T>()
+    .await?)
 }
 
 #[tracing::instrument]
@@ -293,7 +330,7 @@ where
     Ok(())
 }
 
-#[tracing::instrument]
+#[tracing::instrument(level = "debug")]
 pub async fn status<'c, E>(executor: E, hash: &nix::Hash) -> anyhow::Result<Option<Status>>
 where
     E: sqlx::Executor<'c, Database = sqlx::Sqlite>,
@@ -308,6 +345,7 @@ where
     )
 }
 
+#[tracing::instrument(level = "debug")]
 pub async fn insert_status<'c, E>(
     executor: E,
     hash: &nix::Hash,
@@ -329,7 +367,7 @@ where
     Ok(())
 }
 
-#[tracing::instrument]
+#[tracing::instrument(level = "debug")]
 pub async fn update_status<'c, E>(
     executor: E,
     hash: &nix::Hash,
@@ -432,6 +470,10 @@ async fn folder_size(path: &std::path::Path) -> tokio::io::Result<u64> {
 
 pub fn nar_file_path(config: &config::Config, nar_info: &nix::NarInfo) -> PathBuf {
     nar_file_path_from_parts(config, &nar_info.file_hash, &nar_info.compression)
+}
+
+pub fn nar_file_path_from_nar_file(config: &config::Config, nar_file: &nix::NarFile) -> PathBuf {
+    nar_file_path_from_parts(config, &nar_file.hash, &nar_file.compression)
 }
 
 fn nar_file_path_from_parts(

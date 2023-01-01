@@ -1,87 +1,85 @@
+use std::fmt;
 use std::time::Duration;
-use std::{fmt, io};
 
 use apalis::prelude::Job as ApalisJob;
 use apalis::prelude::*;
 use serde::{Deserialize, Serialize};
 
+use anyhow::Context as _;
 use tracing::Instrument as _;
 
-use crate::{cache, config, fetch, nix};
+use crate::{app, cache, config, fetch, nix, transaction};
 
+#[derive(Clone, Debug)]
 pub struct Workers {
     storage: apalis::sqlite::SqliteStorage<Job>,
-    monitor: futures::future::BoxFuture<'static, io::Result<()>>,
 }
 
 impl Workers {
     #[tracing::instrument(name = "workers_init", skip_all)]
-    pub async fn new(config: &config::Config, cache: &cache::Cache) -> Self {
+    pub async fn new() -> anyhow::Result<Self> {
         let storage = apalis::sqlite::SqliteStorage::connect("sqlite::memory:")
             .await
-            .expect("Unable to connect to in-memory sqlite database");
+            .context("Unable to connect to in-memory sqlite database")?;
         storage
             .setup()
             .await
-            .expect("Unable to migrate sqlite database");
+            .context("Unable to migrate sqlite database")?;
 
-        let monitor = {
-            let storage = storage.clone();
-
-            use apalis::layers::{Extension, TraceLayer};
-
-            fn custom_make_span<T>(req: &JobRequest<T>) -> tracing::Span
-            where
-                T: fmt::Debug,
-            {
-                tracing::span!(
-                    parent: tracing::Span::current(),
-                    tracing::Level::DEBUG,
-                    "job",
-                    job = format!("{:?}", req.inner()),
-                    job_id = req.id().as_str(),
-                    current_attempt = req.attempts(),
-                )
-            }
-
-            // let cron_worker = {
-            //     use std::str::FromStr as _;
-            //
-            //     use apalis::cron::{CronWorker, Schedule};
-            //     use tower::ServiceBuilder;
-            //
-            //     CronWorker::new(
-            //         Schedule::from_str("*/5 * * * * *").unwrap(),
-            //         ServiceBuilder::new()
-            //             .layer(TraceLayer::new().make_span_with(custom_make_span))
-            //             .service(job_fn(periodic_job)),
-            //     )
-            // };
-
-            Monitor::new()
-                .register_with_count(4, move |_| {
-                    WorkerBuilder::new(storage.clone())
-                        .layer(TraceLayer::new().make_span_with(custom_make_span))
-                        .layer(Extension(config.clone()))
-                        .layer(Extension(cache.clone()))
-                        .build_fn(dispatch_jobs)
-                })
-                // .register(cron_worker)
-                .run()
-        };
-
-        Self {
-            storage,
-            monitor: Box::pin(monitor),
-        }
+        Ok(Self { storage })
     }
 
-    pub async fn run(self) -> io::Result<()> {
-        self.monitor.await
+    pub async fn run(self, state: app::State) -> anyhow::Result<()> {
+        use apalis::layers::{Extension, TraceLayer};
+
+        fn custom_make_span<T>(req: &JobRequest<T>) -> tracing::Span
+        where
+            T: fmt::Debug,
+        {
+            tracing::span!(
+                parent: tracing::Span::current(),
+                tracing::Level::DEBUG,
+                "job",
+                job = format!("{:?}", req.inner()),
+                job_id = req.id().as_str(),
+                current_attempt = req.attempts(),
+            )
+        }
+
+        // let cron_worker = {
+        //     use std::str::FromStr as _;
+        //
+        //     use apalis::cron::{CronWorker, Schedule};
+        //     use tower::ServiceBuilder;
+        //
+        //     CronWorker::new(
+        //         Schedule::from_str("*/5 * * * * *").unwrap(),
+        //         ServiceBuilder::new()
+        //             .layer(TraceLayer::new().make_span_with(custom_make_span))
+        //             .service(job_fn(periodic_job)),
+        //     )
+        // };
+
+        Monitor::new()
+            .register_with_count(4, move |_| {
+                WorkerBuilder::new(self.storage())
+                    .layer(TraceLayer::new().make_span_with(custom_make_span))
+                    .layer(Extension(state.clone()))
+                    .build_fn(dispatch_jobs)
+            })
+            // .register(cron_worker)
+            .run_without_signals()
+            .await?;
+
+        Ok(())
     }
 
     pub fn storage(&self) -> apalis::sqlite::SqliteStorage<Job> {
         self.storage.clone()
+    }
+
+    pub async fn push_job(&mut self, job: Job) -> apalis_core::storage::StorageResult<()> {
+        self.storage.push(job).await
     }
 }
 
@@ -95,32 +93,14 @@ impl ApalisJob for Job {
     const NAME: &'static str = "nicacher::jobs::Jobs";
 }
 
-macro_rules! transaction {
-    (begin: $cache:expr) => {
-        $cache.begin_transaction().await.map_err(|e| {
-            tracing::error!("Failed to begin transaction: {e}");
-            JobError::Unknown
-        })
-    };
-
-    (commit: $tx:expr) => {
-        $tx.commit().await.map_err(|e| {
-            tracing::error!("Failed to commit transaction: {e}");
-            JobError::Unknown
-        })
-    };
-
-    (rollback: $tx:expr) => {
-        $tx.rollback().await.map_err(|e| {
-            tracing::error!("Failed to rollback transaction: {e}");
-            JobError::Unknown
-        })
+macro_rules! extract_state {
+    ({ $($var:ident),+ $(,)? } <- $ctx:expr) => {
+        let $crate::app::State { $($var),+, .. } = $ctx.data_opt::<$crate::app::State>().unwrap();
     };
 }
 
 async fn dispatch_jobs(job: Job, ctx: JobContext) -> Result<JobResult, JobError> {
-    let config = ctx.data_opt::<config::Config>().unwrap();
-    let cache = ctx.data_opt::<cache::Cache>().unwrap();
+    extract_state!({ config, cache } <- ctx);
 
     match job {
         Job::CacheNar { hash, is_force } => cache_nar(config, cache, hash, is_force).await,
@@ -141,7 +121,7 @@ async fn cache_nar(
         let mut tx = transaction!(begin: cache).map_err(Err)?;
 
         let is_info_available = match cache::status(&mut tx, &hash).await.map_err(|e| {
-            tracing::error!("Failed to check cache status: {e}");
+            tracing::error!("Failed to check cache status: {e:#}");
             Err(JobError::Unknown)
         })? {
             Some(cache::Status::Fetching) => {
@@ -168,7 +148,7 @@ async fn cache_nar(
                 cache::insert_status(&mut tx, &hash, cache::Status::Fetching)
                     .await
                     .map_err(|e| {
-                        tracing::error!("Failed to insert new cache status to `Fetching`: {e}");
+                        tracing::error!("Failed to insert new cache status to `Fetching`: {e:#}");
                         Err(JobError::Unknown)
                     })?;
                 false
@@ -177,7 +157,7 @@ async fn cache_nar(
                 cache::update_status(&mut tx, &hash, cache::Status::Fetching)
                     .await
                     .map_err(|e| {
-                        tracing::error!("Failed to update cache status to `Fetching`: {e}");
+                        tracing::error!("Failed to update cache status to `Fetching`: {e:#}");
                         Err(JobError::Unknown)
                     })?;
                 false
@@ -201,7 +181,7 @@ async fn cache_nar(
         match cache::get_nar_info_with_upstream(cache.db_pool(), &hash)
             .await
             .map_err(|e| {
-                tracing::error!("Error when querying narinfo from local db: {e}");
+                tracing::error!("Error when querying narinfo from local db: {e:#}");
                 JobError::Unknown
             })? {
             Some(v) => v,
@@ -213,7 +193,7 @@ async fn cache_nar(
         }
     } else {
         let (nar_info, upstream) = fetch::request_nar_info(config, &hash).await.map_err(|e| {
-            tracing::error!("Error when requesting narinfo: {e}");
+            tracing::error!("Error when requesting narinfo: {e:#}");
             JobError::Unknown
         })?;
 
@@ -223,14 +203,14 @@ async fn cache_nar(
             cache::insert_nar_info(&mut tx, &hash, &nar_info, &upstream, is_force)
                 .await
                 .map_err(|e| {
-                    tracing::error!("Error when inserting narinfo into cache database: {e}",);
+                    tracing::error!("Error when inserting narinfo into cache database: {e:#}",);
                     JobError::Unknown
                 })?;
 
             cache::update_status(&mut tx, &hash, cache::Status::OnlyInfo)
                 .await
                 .map_err(|e| {
-                    tracing::error!("Failed to update cache status to `OnlyInfo`: {e}");
+                    tracing::error!("Failed to update cache status to `OnlyInfo`: {e:#}");
                     JobError::Unknown
                 })?;
 
@@ -247,14 +227,14 @@ async fn cache_nar(
     fetch::download_nar_file(config, &upstream, &nar_info)
         .await
         .map_err(|e| {
-            tracing::error!("Error when downloading nar file: {e}");
+            tracing::error!("Error when downloading nar file: {e:#}");
             JobError::Unknown
         })?;
 
     cache::update_status(cache.db_pool(), &hash, cache::Status::Available)
         .await
         .map_err(|e| {
-            tracing::error!("Failed to update cache status to `Available`: {e}");
+            tracing::error!("Failed to update cache status to `Available`: {e:#}");
             JobError::Unknown
         })?;
 
@@ -274,7 +254,7 @@ async fn purge_nar(
         let mut tx = transaction!(begin: cache).map_err(Err)?;
 
         let is_nar_file_cached = match cache::status(&mut tx, &hash).await.map_err(|e| {
-            tracing::error!("Failed to check cache status: {e}");
+            tracing::error!("Failed to check cache status: {e:#}");
             Err(JobError::Unknown)
         })? {
             None => {
@@ -305,7 +285,7 @@ async fn purge_nar(
         cache::update_status(&mut tx, &hash, cache::Status::Purging)
             .await
             .map_err(|e| {
-                tracing::error!("Failed to update cache status to `Purging`: {e}");
+                tracing::error!("Failed to update cache status to `Purging`: {e:#}");
                 Err(JobError::Unknown)
             })?;
 
@@ -325,7 +305,7 @@ async fn purge_nar(
         let nar_file_path = match cache::get_nar_file_path(cache.db_pool(), config, &hash)
             .await
             .map_err(|e| {
-                tracing::error!("Failed to get {} narinfo from cache db: {e}", hash.string);
+                tracing::error!("Failed to get {} narinfo from cache db: {e:#}", hash.string);
                 JobError::Unknown
             })? {
             Some(path) => path,
@@ -347,7 +327,7 @@ async fn purge_nar(
     cache::purge_nar_info(cache.db_pool(), &hash)
         .await
         .map_err(|e| {
-            tracing::error!("Error when deleting narinfo entry from cache db: {e}");
+            tracing::error!("Error when deleting narinfo entry from cache db: {e:#}");
             JobError::Unknown
         })?;
 

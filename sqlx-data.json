@@ -1,5 +1,23 @@
 {
   "db": "SQLite",
+  "2312464ef97747ef70c01a1652dffe6def89a0b310cba7829b912830d8a331a6": {
+    "describe": {
+      "columns": [
+        {
+          "name": "store_path",
+          "ordinal": 0,
+          "type_info": "Text"
+        }
+      ],
+      "nullable": [
+        false
+      ],
+      "parameters": {
+        "Right": 1
+      }
+    },
+    "query": "SELECT narinfo.store_path\n         FROM cache\n         INNER JOIN narinfo ON cache.hash = narinfo.hash\n         WHERE cache.status = ?"
+  },
   "2d7d187ab06ccc33a5933873de1b3285033590137a269bd19ec88a9f2acbee77": {
     "describe": {
       "columns": [],
@@ -28,24 +46,6 @@
     },
     "query": "SELECT status FROM cache WHERE hash = ?"
   },
-  "42f65f0d525a4b2c6378fc91f7dc20a38245b96edbdaace53eb3d42ae79557d4": {
-    "describe": {
-      "columns": [
-        {
-          "name": "store_path",
-          "ordinal": 0,
-          "type_info": "Text"
-        }
-      ],
-      "nullable": [
-        false
-      ],
-      "parameters": {
-        "Right": 0
-      }
-    },
-    "query": "SELECT store_path FROM narinfo"
-  },
   "6323c797f343bc894fef3e01e75b9423488c7ccfada2f0b2d0c82658b332dc5a": {
     "describe": {
       "columns": [
@@ -63,6 +63,96 @@
       }
     },
     "query": "SELECT SUM(file_size) FROM narinfo"
+  },
+  "721652c3428a7153ea42abae763dc51528bb14d4120fddd269bcc75d880c0dbf": {
+    "describe": {
+      "columns": [
+        {
+          "name": "hash",
+          "ordinal": 0,
+          "type_info": "Text"
+        },
+        {
+          "name": "store_path",
+          "ordinal": 1,
+          "type_info": "Text"
+        },
+        {
+          "name": "compression",
+          "ordinal": 2,
+          "type_info": "Text"
+        },
+        {
+          "name": "file_hash_method",
+          "ordinal": 3,
+          "type_info": "Text"
+        },
+        {
+          "name": "file_hash",
+          "ordinal": 4,
+          "type_info": "Text"
+        },
+        {
+          "name": "file_size",
+          "ordinal": 5,
+          "type_info": "Int64"
+        },
+        {
+          "name": "nar_hash_method",
+          "ordinal": 6,
+          "type_info": "Text"
+        },
+        {
+          "name": "nar_hash",
+          "ordinal": 7,
+          "type_info": "Text"
+        },
+        {
+          "name": "nar_size",
+          "ordinal": 8,
+          "type_info": "Int64"
+        },
+        {
+          "name": "deriver",
+          "ordinal": 9,
+          "type_info": "Text"
+        },
+        {
+          "name": "system",
+          "ordinal": 10,
+          "type_info": "Text"
+        },
+        {
+          "name": "refs",
+          "ordinal": 11,
+          "type_info": "Text"
+        },
+        {
+          "name": "signature",
+          "ordinal": 12,
+          "type_info": "Text"
+        }
+      ],
+      "nullable": [
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        true,
+        true,
+        false,
+        true
+      ],
+      "parameters": {
+        "Right": 1
+      }
+    },
+    "query": "SELECT * FROM narinfo_fields_view WHERE hash = ?1;"
   },
   "7299b4fb38caf2fdeb2a62a08692e8ed0d83da20e3956dfdac543d07d9007f46": {
     "describe": {
@@ -94,75 +184,7 @@
     },
     "query": "DELETE FROM cache WHERE hash = ?1"
   },
-  "971aa373d03d21b3c88d67a0b94434e02cb9b52ae7a5887c84a72323470bccff": {
-    "describe": {
-      "columns": [
-        {
-          "name": "hash",
-          "ordinal": 0,
-          "type_info": "Text"
-        }
-      ],
-      "nullable": [
-        false
-      ],
-      "parameters": {
-        "Right": 2
-      }
-    },
-    "query": "SELECT hash FROM narinfo WHERE file_hash = ? AND compression = ?"
-  },
-  "bbc76e886de361e0f39d8053ad6b2e3fc3c41843dd148927d6d575fd294e9371": {
-    "describe": {
-      "columns": [],
-      "nullable": [],
-      "parameters": {
-        "Right": 0
-      }
-    },
-    "query": "PRAGMA temp_store = MEMORY;"
-  },
-  "cd6d2e7f5058cac4a9b8039c9398f955dfada5ae59b99901122f528585b46254": {
-    "describe": {
-      "columns": [],
-      "nullable": [],
-      "parameters": {
-        "Right": 2
-      }
-    },
-    "query": "UPDATE cache SET status = ? WHERE hash = ?"
-  },
-  "d04127b60de81818b0773c178827e4d2863a80cc1e7c901832064bf5dd394f16": {
-    "describe": {
-      "columns": [
-        {
-          "name": "method",
-          "ordinal": 0,
-          "type_info": "Text"
-        },
-        {
-          "name": "hash",
-          "ordinal": 1,
-          "type_info": "Text"
-        },
-        {
-          "name": "compression",
-          "ordinal": 2,
-          "type_info": "Text"
-        }
-      ],
-      "nullable": [
-        false,
-        false,
-        false
-      ],
-      "parameters": {
-        "Right": 1
-      }
-    },
-    "query": "SELECT file_hash_method AS method, file_hash AS hash, compression FROM narinfo WHERE hash = ?1"
-  },
-  "d1314ec5f767b0548bfbd4bc2112bda8cac27d26e0cfac984922c8fce5ed95b1": {
+  "855e5bff2ed5bb122582e1bd0b2b253e28f36fdae02acd43db3f8c26589acb21": {
     "describe": {
       "columns": [
         {
@@ -256,18 +278,18 @@
         "Right": 1
       }
     },
-    "query": "SELECT * FROM narinfo WHERE hash = ?1"
+    "query": "SELECT * FROM narinfo WHERE hash = ?1;"
   },
-  "d585af180e5505dacc8b38fad8f0d2a96509b4f0c7cf37e2b8f569e4ebcf7d35": {
+  "96260cf3d160b7eb63e8afe770d1aab7f567df5cd21fc03876edd1ace6f1fcb9": {
     "describe": {
       "columns": [
         {
-          "name": "hash",
+          "name": "method",
           "ordinal": 0,
           "type_info": "Text"
         },
         {
-          "name": "store_path",
+          "name": "hash",
           "ordinal": 1,
           "type_info": "Text"
         },
@@ -275,77 +297,55 @@
           "name": "compression",
           "ordinal": 2,
           "type_info": "Text"
-        },
-        {
-          "name": "file_hash_method",
-          "ordinal": 3,
-          "type_info": "Text"
-        },
-        {
-          "name": "file_hash",
-          "ordinal": 4,
-          "type_info": "Text"
-        },
-        {
-          "name": "file_size",
-          "ordinal": 5,
-          "type_info": "Int64"
-        },
-        {
-          "name": "nar_hash_method",
-          "ordinal": 6,
-          "type_info": "Text"
-        },
-        {
-          "name": "nar_hash",
-          "ordinal": 7,
-          "type_info": "Text"
-        },
-        {
-          "name": "nar_size",
-          "ordinal": 8,
-          "type_info": "Int64"
-        },
-        {
-          "name": "deriver",
-          "ordinal": 9,
-          "type_info": "Text"
-        },
-        {
-          "name": "system",
-          "ordinal": 10,
-          "type_info": "Text"
-        },
-        {
-          "name": "refs",
-          "ordinal": 11,
-          "type_info": "Text"
-        },
-        {
-          "name": "signature",
-          "ordinal": 12,
-          "type_info": "Text"
         }
       ],
       "nullable": [
         false,
         false,
-        false,
-        false,
-        false,
-        false,
-        false,
-        false,
-        false,
-        true,
-        true,
-        false,
-        true
+        false
       ],
       "parameters": {
         "Right": 1
       }
     },
-    "query": "SELECT * FROM narinfo_fields_view WHERE hash = ?1"
+    "query": "\n        SELECT\n            file_hash_method AS method,\n            file_hash AS hash,\n            compression\n        FROM narinfo\n        WHERE hash = ?1"
+  },
+  "971aa373d03d21b3c88d67a0b94434e02cb9b52ae7a5887c84a72323470bccff": {
+    "describe": {
+      "columns": [
+        {
+          "name": "hash",
+          "ordinal": 0,
+          "type_info": "Text"
+        }
+      ],
+      "nullable": [
+        false
+      ],
+      "parameters": {
+        "Right": 2
+      }
+    },
+    "query": "SELECT hash FROM narinfo WHERE file_hash = ? AND compression = ?"
+  },
+  "bbc76e886de361e0f39d8053ad6b2e3fc3c41843dd148927d6d575fd294e9371": {
+    "describe": {
+      "columns": [],
+      "nullable": [],
+      "parameters": {
+        "Right": 0
+      }
+    },
+    "query": "PRAGMA temp_store = MEMORY;"
+  },
+  "cd6d2e7f5058cac4a9b8039c9398f955dfada5ae59b99901122f528585b46254": {
+    "describe": {
+      "columns": [],
+      "nullable": [],
+      "parameters": {
+        "Right": 2
+      }
+    },
+    "query": "UPDATE cache SET status = ? WHERE hash = ?"
   }
 }
