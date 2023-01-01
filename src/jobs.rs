@@ -1,6 +1,7 @@
 use std::time::Duration;
 use std::{fmt, io};
 
+use apalis::prelude::Job as ApalisJob;
 use apalis::prelude::*;
 use serde::{Deserialize, Serialize};
 
@@ -8,25 +9,25 @@ use tracing::Instrument as _;
 
 use crate::{cache, config, fetch, nix};
 
-pub async fn init<'a>(
-    config: &'a config::Config,
-    cache: &'a cache::Cache,
-) -> (
-    impl std::future::Future<Output = io::Result<()>> + 'a,
-    apalis::sqlite::SqliteStorage<Jobs>,
-) {
-    let storage = apalis::sqlite::SqliteStorage::connect("sqlite::memory:")
-        .await
-        .expect("Unable to connect to in-memory sqlite database");
-    storage
-        .setup()
-        .await
-        .expect("Unable to migrate sqlite database");
+pub struct Workers {
+    storage: apalis::sqlite::SqliteStorage<Job>,
+    monitor: futures::future::BoxFuture<'static, io::Result<()>>,
+}
 
-    let workers = {
-        let storage = storage.clone();
+impl Workers {
+    #[tracing::instrument(name = "workers_init", skip_all)]
+    pub async fn new(config: &config::Config, cache: &cache::Cache) -> Self {
+        let storage = apalis::sqlite::SqliteStorage::connect("sqlite::memory:")
+            .await
+            .expect("Unable to connect to in-memory sqlite database");
+        storage
+            .setup()
+            .await
+            .expect("Unable to migrate sqlite database");
 
-        async move {
+        let monitor = {
+            let storage = storage.clone();
+
             use apalis::layers::{Extension, TraceLayer};
 
             fn custom_make_span<T>(req: &JobRequest<T>) -> tracing::Span
@@ -67,20 +68,30 @@ pub async fn init<'a>(
                 })
                 // .register(cron_worker)
                 .run()
-                .await
-        }
-    };
+        };
 
-    (workers, storage)
+        Self {
+            storage,
+            monitor: Box::pin(monitor),
+        }
+    }
+
+    pub async fn run(self) -> io::Result<()> {
+        self.monitor.await
+    }
+
+    pub fn storage(&self) -> apalis::sqlite::SqliteStorage<Job> {
+        self.storage.clone()
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
-pub enum Jobs {
+pub enum Job {
     CacheNar { hash: nix::Hash, is_force: bool },
     PurgeNar { hash: nix::Hash, is_force: bool },
 }
 
-impl Job for Jobs {
+impl ApalisJob for Job {
     const NAME: &'static str = "nicacher::jobs::Jobs";
 }
 
@@ -107,13 +118,13 @@ macro_rules! transaction {
     };
 }
 
-async fn dispatch_jobs(job: Jobs, ctx: JobContext) -> Result<JobResult, JobError> {
+async fn dispatch_jobs(job: Job, ctx: JobContext) -> Result<JobResult, JobError> {
     let config = ctx.data_opt::<config::Config>().unwrap();
     let cache = ctx.data_opt::<cache::Cache>().unwrap();
 
     match job {
-        Jobs::CacheNar { hash, is_force } => cache_nar(config, cache, hash, is_force).await,
-        Jobs::PurgeNar { hash, is_force } => purge_nar(config, cache, hash, is_force).await,
+        Job::CacheNar { hash, is_force } => cache_nar(config, cache, hash, is_force).await,
+        Job::PurgeNar { hash, is_force } => purge_nar(config, cache, hash, is_force).await,
     }
 }
 
@@ -346,7 +357,7 @@ async fn purge_nar(
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 struct Periodic;
 
-impl Job for Periodic {
+impl ApalisJob for Periodic {
     const NAME: &'static str = "nicacher::jobs::Periodic";
 }
 

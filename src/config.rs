@@ -7,27 +7,6 @@ use anyhow::Context as _;
 
 use crate::nix;
 
-pub fn get() -> Config {
-    tracing::info!("Reading config from env");
-
-    let config = (|| -> anyhow::Result<Config> {
-        let config_path = std::env::var("NICACHER_CONFIG")?;
-        let config_str = std::fs::read_to_string(&config_path)
-            .with_context(|| format!("Unable to read config from {config_path:?}"))?;
-
-        Ok(toml::from_str::<Config>(&config_str)?)
-    })()
-    .unwrap_or_else(|e| {
-        tracing::warn!("Unable to read config from env: {e}");
-        tracing::info!("Using default config");
-        Config::default()
-    });
-
-    tracing::trace!("Using config: {config:?}");
-
-    config
-}
-
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Config {
@@ -38,6 +17,31 @@ pub struct Config {
 
     pub local_data_path: PathBuf,
     pub database_max_connections: u32,
+}
+
+impl Config {
+    const ENV_VAR: &str = "NICACHER_CONFIG";
+
+    pub fn get() -> Self {
+        tracing::info!("Reading config from env");
+
+        let config = (|| -> anyhow::Result<Config> {
+            let config_path = std::env::var(Self::ENV_VAR)?;
+            let config_str = std::fs::read_to_string(&config_path)
+                .with_context(|| format!("Unable to read config from {config_path:?}"))?;
+
+            Ok(toml::from_str::<Config>(&config_str)?)
+        })()
+        .unwrap_or_else(|e| {
+            tracing::warn!("Unable to read config from env: {e}");
+            tracing::info!("Using default config");
+            Config::default()
+        });
+
+        tracing::trace!("Using config: {config:?}");
+
+        config
+    }
 }
 
 impl Default for Config {

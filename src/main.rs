@@ -1,10 +1,10 @@
+// mod app;
 mod cache;
 mod config;
 mod fetch;
+// mod http;
 mod jobs;
 mod nix;
-
-use std::io;
 
 use actix_web::{get, web, HttpResponse, Responder};
 use apalis::prelude::*;
@@ -16,7 +16,7 @@ use serde::Deserialize;
 const PKG_NAME: &str = env!("CARGO_PKG_NAME");
 
 #[actix_web::main]
-async fn main() -> io::Result<()> {
+async fn main() -> anyhow::Result<()> {
     {
         use tracing::subscriber::set_global_default;
         use tracing_subscriber::filter::EnvFilter;
@@ -39,7 +39,7 @@ async fn main() -> io::Result<()> {
         set_global_default(subscriber).expect("Failed to set subscriber");
     }
 
-    let config = config::get();
+    let config = config::Config::get();
 
     tracing::info!("NiCacher Server starts");
 
@@ -47,11 +47,11 @@ async fn main() -> io::Result<()> {
         .await
         .expect("Failed to initialize cache");
 
-    let (workers, jobs_storage) = jobs::init(&config, &cache).await;
+    let workers = jobs::Workers::new(&config, &cache).await;
 
     let datas = (
         web::Data::new(config.clone()),
-        web::Data::new(jobs_storage.clone()),
+        web::Data::new(workers.storage()),
         web::Data::new(cache.clone()),
     );
 
@@ -74,7 +74,7 @@ async fn main() -> io::Result<()> {
     .bind(("0.0.0.0", 8080))?
     .run();
 
-    tokio::try_join!(http, workers)?;
+    tokio::try_join!(http, workers.run())?;
 
     cache.cleanup().await;
 
@@ -96,7 +96,7 @@ async fn nix_cache_info() -> impl Responder {
 #[get("/{hash}.narinfo")]
 async fn get_nar_info(
     hash: web::Path<nix::Hash>,
-    jobs_storage: web::Data<SqliteStorage<jobs::Jobs>>,
+    jobs_storage: web::Data<SqliteStorage<jobs::Job>>,
     cache: web::Data<cache::Cache>,
 ) -> impl Responder {
     use actix_web::http::header::ContentType;
@@ -112,7 +112,7 @@ async fn get_nar_info(
         Ok(None) => {
             tracing::info!("Cache miss, pushing job to attempt caching");
 
-            let job = jobs::Jobs::CacheNar {
+            let job = jobs::Job::CacheNar {
                 hash: hash.clone(),
                 is_force: false,
             };
@@ -222,13 +222,13 @@ struct IsForce {
 async fn cache_nar(
     hash: web::Path<nix::Hash>,
     web::Query(IsForce { is_force }): web::Query<IsForce>,
-    jobs_storage: web::Data<SqliteStorage<jobs::Jobs>>,
+    jobs_storage: web::Data<SqliteStorage<jobs::Job>>,
 ) -> impl Responder {
     let mut jobs_storage = (*jobs_storage.into_inner()).clone();
     let hash = hash.into_inner();
 
     match jobs_storage
-        .push(jobs::Jobs::CacheNar {
+        .push(jobs::Job::CacheNar {
             hash: hash.clone(),
             is_force,
         })
@@ -248,7 +248,7 @@ async fn purge_nar(
     hash: web::Path<nix::Hash>,
     web::Query(IsForce { is_force }): web::Query<IsForce>,
     cache: web::Data<cache::Cache>,
-    jobs_storage: web::Data<SqliteStorage<jobs::Jobs>>,
+    jobs_storage: web::Data<SqliteStorage<jobs::Job>>,
 ) -> impl Responder {
     let mut jobs_storage = (*jobs_storage.into_inner()).clone();
     let hash = hash.into_inner();
@@ -271,7 +271,7 @@ async fn purge_nar(
     };
 
     match jobs_storage
-        .push(jobs::Jobs::PurgeNar {
+        .push(jobs::Job::PurgeNar {
             hash: hash.clone(),
             is_force,
         })
