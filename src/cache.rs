@@ -7,7 +7,7 @@ use futures::{StreamExt as _, TryStreamExt as _};
 use crate::{config, nix};
 
 pub const NAR_FILE_DIR: &str = "nar";
-pub const CACHE_DB_PATH: &str = "cache.db";
+pub const CACHE_DB_FILE: &str = "cache.db";
 
 #[derive(Clone, Debug)]
 pub struct Cache {
@@ -43,7 +43,7 @@ impl Cache {
 
             let database_url = format!(
                 "sqlite://{}",
-                config.local_data_path.join(CACHE_DB_PATH).display()
+                config.local_data_path.join(CACHE_DB_FILE).display()
             );
 
             let connection_options = SqliteConnectOptions::from_str(&database_url)?
@@ -391,6 +391,8 @@ pub async fn reported_size<'c, E>(executor: E) -> anyhow::Result<u64>
 where
     E: sqlx::Executor<'c, Database = sqlx::Sqlite>,
 {
+    tracing::debug!("Getting reported size of cached nar files");
+
     Ok(sqlx::query_scalar!("SELECT SUM(file_size) FROM narinfo")
         .fetch_one(executor)
         .await?

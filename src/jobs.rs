@@ -29,7 +29,11 @@ impl Workers {
         Ok(Self { storage })
     }
 
-    pub async fn run(self, state: app::State) -> anyhow::Result<()> {
+    pub async fn run(
+        self,
+        state: app::State,
+        server_shutdown_tx: tokio::sync::oneshot::Sender<()>,
+    ) -> anyhow::Result<()> {
         use apalis::layers::{Extension, TraceLayer};
 
         fn custom_make_span<T>(req: &JobRequest<T>) -> tracing::Span
@@ -60,16 +64,22 @@ impl Workers {
         //     )
         // };
 
-        Monitor::new()
-            .register_with_count(4, move |_| {
-                WorkerBuilder::new(self.storage())
-                    .layer(TraceLayer::new().make_span_with(custom_make_span))
-                    .layer(Extension(state.clone()))
-                    .build_fn(dispatch_jobs)
-            })
-            // .register(cron_worker)
-            .run_without_signals()
-            .await?;
+        let monitor = Monitor::new().register_with_count(4, move |_| {
+            WorkerBuilder::new(self.storage())
+                .layer(TraceLayer::new().make_span_with(custom_make_span))
+                .layer(Extension(state.clone()))
+                .build_fn(dispatch_jobs)
+        });
+        // .register(cron_worker)
+
+        tracing::info!("Starting workers");
+
+        monitor.run().await?;
+
+        tracing::info!("Shutting down http server");
+        let _ = server_shutdown_tx.send(());
+
+        tracing::info!("Cleaning up jobs database");
 
         Ok(())
     }
@@ -90,7 +100,7 @@ pub enum Job {
 }
 
 impl ApalisJob for Job {
-    const NAME: &'static str = "nicacher::jobs::Jobs";
+    const NAME: &'static str = "nicacher::jobs::Job";
 }
 
 macro_rules! extract_state {

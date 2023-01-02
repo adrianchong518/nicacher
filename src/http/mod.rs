@@ -1,27 +1,39 @@
 mod admin;
 mod api;
 
+use anyhow::Context as _;
+
 use crate::app;
 
 #[derive(Debug)]
 pub struct Server {
     router: axum::Router<app::State>,
+    shutdown_rx: tokio::sync::oneshot::Receiver<()>,
 }
 
 impl Server {
     #[tracing::instrument(name = "server_init")]
-    pub fn new() -> Self {
+    pub fn new(shutdown_rx: tokio::sync::oneshot::Receiver<()>) -> Self {
         use tower_http::trace::TraceLayer;
 
         let router = api::router().layer(TraceLayer::new_for_http());
 
-        Self { router }
+        Self {
+            router,
+            shutdown_rx,
+        }
     }
 
     pub async fn run(self, state: app::State) -> anyhow::Result<()> {
-        axum::Server::bind(&"0.0.0.0:8080".parse().unwrap())
+        let server = axum::Server::bind(&"0.0.0.0:8080".parse().unwrap())
             .serve(self.router.with_state(state).into_make_service())
-            .await?;
+            .with_graceful_shutdown(async {
+                self.shutdown_rx.await.ok();
+            });
+
+        tracing::info!("Starting http server");
+
+        server.await.context("Http server error")?;
 
         Ok(())
     }
