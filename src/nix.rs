@@ -446,14 +446,82 @@ impl fmt::Display for CompressionType {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct Upstream {
-    pub url: url::Url,
-    #[serde(default)]
-    pub prioriy: Priority,
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct Upstream(url::Url);
+
+impl Upstream {
+    pub fn new(url: url::Url) -> Self {
+        Self(url)
+    }
+
+    pub fn url(&self) -> &url::Url {
+        &self.0
+    }
 }
 
-#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PriorityUpstream {
+    #[serde(rename = "url")]
+    inner: Upstream,
+    #[serde(default)]
+    priority: Priority,
+}
+
+impl PriorityUpstream {
+    pub fn from_url(url: url::Url) -> Self {
+        Self {
+            inner: Upstream(url),
+            priority: Priority::default(),
+        }
+    }
+
+    pub fn url(&self) -> &url::Url {
+        &self.inner.0
+    }
+}
+
+impl AsRef<Upstream> for PriorityUpstream {
+    fn as_ref(&self) -> &Upstream {
+        &self.inner
+    }
+}
+
+impl Into<Upstream> for PriorityUpstream {
+    fn into(self) -> Upstream {
+        self.inner
+    }
+}
+
+impl PartialOrd for PriorityUpstream {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        match self.priority.partial_cmp(&other.priority) {
+            Some(core::cmp::Ordering::Equal) => {}
+            ord => return ord,
+        }
+        self.inner.partial_cmp(&other.inner)
+    }
+}
+
+impl Ord for PriorityUpstream {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        match self.priority.cmp(&other.priority) {
+            core::cmp::Ordering::Equal => {}
+            ord => return ord,
+        }
+        self.inner.cmp(&other.inner)
+    }
+}
+
+impl FromStr for PriorityUpstream {
+    type Err = <url::Url as FromStr>::Err;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(PriorityUpstream::from_url(s.parse()?))
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct Priority(u32);
 
 impl Default for Priority {

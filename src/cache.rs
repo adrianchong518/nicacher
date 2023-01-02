@@ -161,10 +161,7 @@ where
 
     if let Some(entry) = entry {
         tracing::debug!("Found narinfo entry in database");
-        let upstream = nix::Upstream {
-            url: entry.upstream_url.parse()?,
-            prioriy: nix::Priority::default(),
-        };
+        let upstream = nix::Upstream::new(entry.upstream_url.parse()?);
         let nar_info = nix::NarInfo::try_from(entry)?;
         Ok(Some((nar_info, upstream)))
     } else {
@@ -237,7 +234,7 @@ where
     E: sqlx::Executor<'c, Database = sqlx::Sqlite>,
 {
     let entry = NarInfoEntry::from_nar_info(hash, nar_info);
-    let upstream_url = upstream.url.to_string();
+    let upstream_url = upstream.url().to_string();
 
     if force {
         tracing::info!(

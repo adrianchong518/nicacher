@@ -55,12 +55,12 @@ async fn request_nar_info_raw(
 ) -> anyhow::Result<(reqwest::Response, nix::Upstream)> {
     let stream = stream::iter(config.upstreams.iter()).filter_map(|upstream| async {
         let url = upstream
-            .url
+            .url()
             .join(&format!("{}.narinfo", hash.string))
             .map_err(|e| {
                 tracing::warn!(
                     "Failed to build narinfo url with {} and {}: {e}",
-                    upstream.url,
+                    upstream.url(),
                     hash.string
                 );
             })
@@ -73,7 +73,7 @@ async fn request_nar_info_raw(
             })
             .ok()?;
 
-        Some((res, upstream.clone()))
+        Some::<(reqwest::Response, nix::Upstream)>((res, upstream.as_ref().clone()))
     });
     futures::pin_mut!(stream);
 
@@ -103,7 +103,7 @@ async fn request_nar_file_raw(
     upstream: &nix::Upstream,
     url_path: &str,
 ) -> anyhow::Result<reqwest::Response> {
-    let url = upstream.url.join(url_path)?;
+    let url = upstream.url().join(url_path)?;
 
     reqwest::get(url.clone())
         .await?
@@ -111,13 +111,16 @@ async fn request_nar_file_raw(
         .with_context(|| format!("Failed to request nar file from {url}"))
 }
 
-#[tracing::instrument(skip_all, fields(nar_info_url = nar_info.url.to_string(), upstream_url = upstream.url.to_string()))]
+#[tracing::instrument(
+    skip_all,
+    fields(nar_info_url = nar_info.url.to_string(), upstream_url = upstream.url().to_string()))
+]
 pub async fn download_nar_file(
     config: &config::Config,
     upstream: &nix::Upstream,
     nar_info: &nix::NarInfo,
 ) -> anyhow::Result<()> {
-    tracing::info!("Downloading {} from {}", nar_info.url, upstream.url);
+    tracing::info!("Downloading {} from {}", nar_info.url, upstream.url());
 
     let nar_file_bytes = request_nar_file_raw(upstream, &nar_info.url)
         .await?
