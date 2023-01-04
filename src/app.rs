@@ -8,8 +8,6 @@ pub struct App {
     server: http::Server,
     cache: cache::Cache,
     workers: jobs::Workers,
-
-    server_shutdown_tx: tokio::sync::oneshot::Sender<()>,
 }
 
 #[derive(Clone, Debug)]
@@ -24,9 +22,7 @@ impl App {
     pub async fn new() -> anyhow::Result<Self> {
         let config = config::Config::get();
 
-        let (server_shutdown_tx, server_shutdown_rx) = tokio::sync::oneshot::channel();
-
-        let server = http::Server::new(server_shutdown_rx);
+        let server = http::Server::new();
 
         let cache = cache::Cache::new(&config).await?;
         let workers = jobs::Workers::new().await?;
@@ -36,7 +32,6 @@ impl App {
             server,
             cache,
             workers,
-            server_shutdown_tx,
         })
     }
 
@@ -49,7 +44,7 @@ impl App {
 
         tokio::try_join!(
             self.server.run(state.clone()),
-            self.workers.run(state.clone(), self.server_shutdown_tx),
+            self.workers.run(state.clone()),
         )?;
 
         tracing::info!("Cleaning up cache database");

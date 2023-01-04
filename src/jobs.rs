@@ -76,10 +76,7 @@ impl Workers {
 
         monitor.run().await?;
 
-        tracing::info!("Shutting down http server");
-        let _ = server_shutdown_tx.send(());
-
-        tracing::info!("Cleaning up jobs database");
+        tracing::info!("Workers stopped");
 
         Ok(())
     }
