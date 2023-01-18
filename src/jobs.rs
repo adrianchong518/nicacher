@@ -201,17 +201,17 @@ async fn cache_nar(
 
     let (nar_info, upstream) = if is_info_available {
         tracing::debug!("Skipping request from upstream, querying from local db");
-        match cache::get_nar_info_with_upstream(cache.db_pool(), &hash)
+        let maybe_v = cache::get_nar_info_with_upstream(cache.db_pool(), &hash)
             .await
             .context("Error when querying narinfo from local db")
-            .map_err(error::Error::from)?
-        {
-            Some(v) => v,
-            None => {
-                // HACK: There should be a better way of handling this
-                tracing::warn!("Race condition, narinfo became unavaliable, retrying");
-                return Ok(JobResult::Retry);
-            }
+            .map_err(error::Error::from)?;
+
+        if let Some(v) = maybe_v {
+            v
+        } else {
+            // HACK: There should be a better way of handling this
+            tracing::warn!("Race condition, narinfo became unavaliable, retrying");
+            return Ok(JobResult::Retry);
         }
     } else {
         let (nar_info, upstream) = fetch::request_nar_info(config, &hash)
@@ -315,13 +315,15 @@ async fn purge_nar(
     };
 
     if is_nar_file_cached {
-        let nar_file_path = match cache::get_nar_file_path(cache.db_pool(), config, &hash)
-            .await
-            .with_context(|| format!("Failed to get {} narinfo from cache db", hash.string))
-            .map_err(error::Error::from)?
-        {
-            Some(path) => path,
-            None => {
+        let nar_file_path = {
+            let maybe_path = cache::get_nar_file_path(cache.db_pool(), config, &hash)
+                .await
+                .with_context(|| format!("Failed to get {} narinfo from cache db", hash.string))
+                .map_err(error::Error::from)?;
+
+            if let Some(path) = maybe_path {
+                path
+            } else {
                 // HACK: There should be a better way of handling this
                 tracing::warn!("Race condition, narinfo became unavaliable, retrying");
                 return Ok(JobResult::Retry);

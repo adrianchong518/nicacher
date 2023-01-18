@@ -484,7 +484,7 @@ fn nar_file_path_from_parts(
     config
         .local_data_path
         .join(NAR_FILE_DIR)
-        .join(format!("{}.nar.{}", file_hash.string, compression))
+        .join(format!("{}.nar.{compression}", file_hash.string))
 }
 
 #[allow(dead_code)]
@@ -550,7 +550,7 @@ impl TryFrom<NarInfoEntry> for nix::NarInfo {
             .compression
             .parse::<CompressionType>()
             .map_err(|e| Self::Error::InvalidFieldValue("Compression".to_owned(), e.to_string()))?;
-        let url = format!("nar/{}.nar.{}", file_hash.string, compression);
+        let url = format!("nar/{}.nar.{compression}", file_hash.string);
 
         nix::NarInfoBuilder::default()
             .store_path(value.store_path.parse::<StorePath>().map_err(|e| {

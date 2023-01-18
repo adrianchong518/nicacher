@@ -71,7 +71,7 @@ NarSize: {}",
         writeln!(f)?;
 
         if let Some(ref signature) = self.signature {
-            write!(f, "Sig: {}", signature)?;
+            write!(f, "Sig: {signature}")?;
         }
 
         Ok(())
