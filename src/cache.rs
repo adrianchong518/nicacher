@@ -295,7 +295,7 @@ where
     tracing::info!("Getting all cached store paths");
 
     let status: i64 = Status::Available.into();
-    Ok(sqlx::query_scalar!(
+    sqlx::query_scalar!(
         "SELECT narinfo.store_path
          FROM cache
          INNER JOIN narinfo ON cache.hash = narinfo.hash
@@ -310,7 +310,7 @@ where
         }
     })
     .try_collect::<T>()
-    .await?)
+    .await
 }
 
 #[tracing::instrument]

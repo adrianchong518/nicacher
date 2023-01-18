@@ -10,6 +10,12 @@ use tracing::Instrument as _;
 
 use crate::{app, cache, config, fetch, nix, transaction};
 
+macro_rules! extract_state {
+    ({ $($var:ident),* $(,)? } <- $ctx:expr) => {
+        let $crate::app::State { $($var,)* .. } = $ctx.data_opt::<$crate::app::State>().unwrap();
+    };
+}
+
 #[derive(Clone, Debug)]
 pub struct Workers {
     storage: apalis::sqlite::SqliteStorage<Job>,
@@ -29,11 +35,7 @@ impl Workers {
         Ok(Self { storage })
     }
 
-    pub async fn run(
-        self,
-        state: app::State,
-        server_shutdown_tx: tokio::sync::oneshot::Sender<()>,
-    ) -> anyhow::Result<()> {
+    pub async fn run(self, state: app::State) -> anyhow::Result<()> {
         use apalis::layers::{Extension, TraceLayer};
 
         fn custom_make_span<T>(req: &JobRequest<T>) -> tracing::Span
@@ -50,27 +52,43 @@ impl Workers {
             )
         }
 
-        // let cron_worker = {
-        //     use std::str::FromStr as _;
-        //
-        //     use apalis::cron::{CronWorker, Schedule};
-        //     use tower::ServiceBuilder;
-        //
-        //     CronWorker::new(
-        //         Schedule::from_str("*/5 * * * * *").unwrap(),
-        //         ServiceBuilder::new()
-        //             .layer(TraceLayer::new().make_span_with(custom_make_span))
-        //             .service(job_fn(periodic_job)),
-        //     )
-        // };
+        macro_rules! new_cron_worker {
+            ($cron:literal => $job:expr) => {{
+                use apalis::cron::{CronWorker, Schedule};
+                use std::str::FromStr as _;
+                use tower::ServiceBuilder;
 
-        let monitor = Monitor::new().register_with_count(4, move |_| {
-            WorkerBuilder::new(self.storage())
-                .layer(TraceLayer::new().make_span_with(custom_make_span))
-                .layer(Extension(state.clone()))
-                .build_fn(dispatch_jobs)
-        });
-        // .register(cron_worker)
+                CronWorker::new(
+                    Schedule::from_str($cron).unwrap(),
+                    ServiceBuilder::new()
+                        .layer(TraceLayer::new().make_span_with(custom_make_span))
+                        .layer(Extension(state.clone()))
+                        .service(job_fn(|_: Periodic, ctx: JobContext| async move {
+                            extract_state!({ workers } <- ctx);
+                            let mut workers = workers.clone();
+
+                            let job = $job;
+                            tracing::debug!("Running job: {job:?}");
+
+                            workers.push_job(job).await.map_err(|e| {
+                                tracing::error!("Failed to push job: {e:#}");
+                                JobError::Unknown
+                            })?;
+
+                            Ok::<_, JobError>(JobResult::Success)
+                        })),
+                )
+            }};
+        }
+
+        let monitor = Monitor::new()
+            .register_with_count(4, |_| {
+                WorkerBuilder::new(self.storage())
+                    .layer(TraceLayer::new().make_span_with(custom_make_span))
+                    .layer(Extension(state.clone()))
+                    .build_fn(dispatch_jobs)
+            })
+            .register(new_cron_worker!("*/5 * * * * *" => Job::Test));
 
         tracing::info!("Starting workers");
 
@@ -94,16 +112,11 @@ impl Workers {
 pub enum Job {
     CacheNar { hash: nix::Hash, is_force: bool },
     PurgeNar { hash: nix::Hash, is_force: bool },
+    Test,
 }
 
 impl ApalisJob for Job {
     const NAME: &'static str = "nicacher::jobs::Job";
-}
-
-macro_rules! extract_state {
-    ({ $($var:ident),+ $(,)? } <- $ctx:expr) => {
-        let $crate::app::State { $($var),+, .. } = $ctx.data_opt::<$crate::app::State>().unwrap();
-    };
 }
 
 async fn dispatch_jobs(job: Job, ctx: JobContext) -> Result<JobResult, JobError> {
@@ -112,6 +125,10 @@ async fn dispatch_jobs(job: Job, ctx: JobContext) -> Result<JobResult, JobError>
     match job {
         Job::CacheNar { hash, is_force } => cache_nar(config, cache, hash, is_force).await,
         Job::PurgeNar { hash, is_force } => purge_nar(config, cache, hash, is_force).await,
+        Job::Test => {
+            tracing::info!("Ran test job");
+            Ok(JobResult::Success)
+        }
     }
 }
 
@@ -346,9 +363,4 @@ struct Periodic;
 
 impl ApalisJob for Periodic {
     const NAME: &'static str = "nicacher::jobs::Periodic";
-}
-
-async fn periodic_job(_: Periodic, _ctx: JobContext) -> Result<JobResult, JobError> {
-    tracing::info!("Ran periodic job");
-    Ok(JobResult::Success)
 }
