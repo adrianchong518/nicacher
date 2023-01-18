@@ -1,6 +1,7 @@
 mod app;
 mod cache;
 mod config;
+mod error;
 mod fetch;
 mod http;
 mod jobs;

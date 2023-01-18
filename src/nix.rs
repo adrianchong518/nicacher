@@ -487,9 +487,9 @@ impl AsRef<Upstream> for PriorityUpstream {
     }
 }
 
-impl Into<Upstream> for PriorityUpstream {
-    fn into(self) -> Upstream {
-        self.inner
+impl From<PriorityUpstream> for Upstream {
+    fn from(val: PriorityUpstream) -> Self {
+        val.inner
     }
 }
 

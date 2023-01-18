@@ -86,24 +86,25 @@ impl Cache {
 #[macro_export]
 macro_rules! transaction {
     (begin: $cache:expr) => {
-        $cache.begin_transaction().await.map_err(|e| {
-            tracing::error!("Failed to begin transaction: {e}");
-            apalis::prelude::JobError::Unknown
-        })
+        $cache
+            .begin_transaction()
+            .await
+            .context("Failed to begin transaction")
+            .map_err($crate::error::Error::from)
     };
 
     (commit: $tx:expr) => {
-        $tx.commit().await.map_err(|e| {
-            tracing::error!("Failed to commit transaction: {e}");
-            apalis::prelude::JobError::Unknown
-        })
+        $tx.commit()
+            .await
+            .context("Failed to commit transaction")
+            .map_err($crate::error::Error::from)
     };
 
     (rollback: $tx:expr) => {
-        $tx.rollback().await.map_err(|e| {
-            tracing::error!("Failed to rollback transaction: {e}");
-            apalis::prelude::JobError::Unknown
-        })
+        $tx.rollback()
+            .await
+            .context("Failed to rollback transaction")
+            .map_err($crate::error::Error::from)
     };
 }
 

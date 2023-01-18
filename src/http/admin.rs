@@ -5,7 +5,7 @@ use serde::Deserialize;
 
 use anyhow::Context as _;
 
-use crate::{app, cache, fetch, http, jobs, nix};
+use crate::{app, cache, error, fetch, jobs, nix};
 
 pub(super) fn router() -> axum::Router<app::State> {
     use axum::routing::get;
@@ -28,7 +28,7 @@ async fn nar_status(
 
 async fn cache_size(
     State(app::State { config, cache, .. }): State<app::State>,
-) -> http::Result<impl IntoResponse> {
+) -> error::Result<impl IntoResponse> {
     let disk_size = cache::disk_size(&config)
         .await
         .context("Failed to get total cache disk size")?;
@@ -59,7 +59,7 @@ async fn cache_nar(
     Path(hash): Path<nix::Hash>,
     Query(IsForce { is_force }): Query<IsForce>,
     State(app::State { mut workers, .. }): State<app::State>,
-) -> http::Result<impl IntoResponse> {
+) -> error::Result<impl IntoResponse> {
     workers
         .push_job(jobs::Job::CacheNar {
             hash: hash.clone(),
@@ -77,7 +77,7 @@ async fn purge_nar(
     State(app::State {
         cache, mut workers, ..
     }): State<app::State>,
-) -> http::Result<impl IntoResponse> {
+) -> error::Result<impl IntoResponse> {
     let is_cached = cache::is_cached_by_hash(cache.db_pool(), &hash)
         .await
         .with_context(|| format!("Failed to get information on {}.narinfo", hash.string))?;
@@ -118,7 +118,7 @@ impl Default for ListLimit {
 async fn list_cached(
     Query(ListLimit { limit }): Query<ListLimit>,
     State(app::State { cache, .. }): State<app::State>,
-) -> http::Result<impl IntoResponse> {
+) -> error::Result<impl IntoResponse> {
     let cached_store_paths = cache::get_store_paths::<_, Vec<_>>(cache.db_pool())
         .await
         .context("Failed to get cached store paths")?;
@@ -140,7 +140,7 @@ Store paths of cached derivations: (limit: {limit})
 async fn list_cache_diff(
     Query(ListLimit { limit }): Query<ListLimit>,
     State(app::State { config, cache, .. }): State<app::State>,
-) -> http::Result<impl IntoResponse> {
+) -> error::Result<impl IntoResponse> {
     use std::collections::BTreeSet;
 
     let cached_store_paths = cache::get_store_paths::<_, BTreeSet<_>>(cache.db_pool())

@@ -62,31 +62,3 @@ async fn shutdown_signal() {
 
     println!("signal received, starting graceful shutdown");
 }
-
-type Result<T> = std::result::Result<T, Error>;
-
-struct Error(anyhow::Error);
-
-impl axum::response::IntoResponse for Error {
-    fn into_response(self) -> axum::response::Response {
-        tracing::error!("{:?}", self.0);
-
-        (
-            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-            format!(
-                "Failed to handle request due to internal server error:\n{:?}",
-                self.0
-            ),
-        )
-            .into_response()
-    }
-}
-
-impl<E> From<E> for Error
-where
-    E: Into<anyhow::Error>,
-{
-    fn from(err: E) -> Self {
-        Self(err.into())
-    }
-}

@@ -94,7 +94,7 @@ where
         where
             E: de::Error,
         {
-            Ok(FromStr::from_str(value).map_err(de::Error::custom)?)
+            FromStr::from_str(value).map_err(de::Error::custom)
         }
 
         fn visit_map<M>(self, map: M) -> Result<T, M::Error>
