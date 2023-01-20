@@ -12,11 +12,10 @@ use anyhow::Context as _;
 const PKG_NAME: &str = env!("CARGO_PKG_NAME");
 
 #[tokio::main]
-async fn main() -> anyhow::Result<()> {
+async fn main() -> error::Result<()> {
     {
         use tracing::subscriber::set_global_default;
-        use tracing_subscriber::filter::EnvFilter;
-        use tracing_subscriber::prelude::*;
+        use tracing_subscriber::{filter::EnvFilter, prelude::*};
 
         tracing_log::LogTracer::init().context("Failed to set logger")?;
 

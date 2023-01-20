@@ -1,8 +1,4 @@
-use std::collections::BTreeSet;
-use std::fmt;
-use std::marker::PhantomData;
-use std::path::PathBuf;
-use std::str::FromStr;
+use std::{collections::BTreeSet, fmt, marker::PhantomData, path::PathBuf, str::FromStr};
 
 use serde::{Deserialize, Deserializer, Serialize};
 use url::Url;

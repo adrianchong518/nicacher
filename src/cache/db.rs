@@ -1,18 +1,14 @@
-use std::path::PathBuf;
-use std::str::FromStr;
+use std::{path::PathBuf, str::FromStr};
 
 use anyhow::Context as _;
 use futures::StreamExt as _;
 
-use crate::{config, nix};
+use crate::{cache, config, nix};
 
-pub const NAR_FILE_DIR: &str = "nar";
-pub const CACHE_DB_FILE: &str = "cache.db";
+const CACHE_DB_FILE: &str = "cache.db";
 
 #[derive(Clone, Debug)]
-pub struct Cache {
-    db_pool: sqlx::SqlitePool,
-}
+pub(super) struct Database(sqlx::SqlitePool);
 
 #[derive(
     Clone, Copy, Debug, Default, num_enum::IntoPrimitive, num_enum::FromPrimitive, sqlx::Type,
@@ -29,59 +25,51 @@ pub enum Status {
 
 // TODO: Check for way to see if DELETE/UPDATE is successful
 
-impl Cache {
-    #[tracing::instrument(name = "cache_init", skip(config))]
-    pub async fn new(config: &config::Config) -> anyhow::Result<Cache> {
-        {
-            tracing::trace!("Creating directory structure in data path");
-            tokio::fs::create_dir_all(config.local_data_path.join(NAR_FILE_DIR)).await?;
-        }
-
-        tracing::info!("Establishing connection to SQLite cache database");
-        let cache = {
-            use sqlx::sqlite::{
-                SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous,
-            };
-
-            let database_url = format!(
-                "sqlite://{}",
-                config.local_data_path.join(CACHE_DB_FILE).display()
-            );
-
-            let connection_options = SqliteConnectOptions::from_str(&database_url)?
-                .create_if_missing(true)
-                .journal_mode(SqliteJournalMode::Wal)
-                .synchronous(SqliteSynchronous::Normal);
-
-            let db_pool = SqlitePoolOptions::new()
-                .max_connections(config.database_max_connections)
-                .connect_with(connection_options)
-                .await?;
-
-            tracing::info!("Migrating cache database");
-            sqlx::query!("PRAGMA temp_store = MEMORY;")
-                .execute(&db_pool)
-                .await?;
-            sqlx::migrate!().run(&db_pool).await?;
-
-            Cache { db_pool }
+impl Database {
+    #[tracing::instrument(name = "cache_db_init", skip(config))]
+    pub(super) async fn new(config: &config::Config) -> anyhow::Result<Self> {
+        use sqlx::sqlite::{
+            SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous,
         };
 
-        Ok(cache)
+        tracing::info!("Establishing connection to SQLite cache database");
+
+        let database_url = format!(
+            "sqlite://{}",
+            config.local_data_path.join(CACHE_DB_FILE).display()
+        );
+
+        let connection_options = SqliteConnectOptions::from_str(&database_url)?
+            .create_if_missing(true)
+            .journal_mode(SqliteJournalMode::Wal)
+            .synchronous(SqliteSynchronous::Normal);
+
+        let db_pool = SqlitePoolOptions::new()
+            .max_connections(config.database_max_connections)
+            .connect_with(connection_options)
+            .await?;
+
+        tracing::info!("Migrating cache database");
+        sqlx::query!("PRAGMA temp_store = MEMORY;")
+            .execute(&db_pool)
+            .await?;
+        sqlx::migrate!().run(&db_pool).await?;
+
+        Ok(Self(db_pool))
     }
 
-    pub async fn cleanup(self) {
-        self.db_pool.close().await;
+    pub(super) async fn cleanup(self) {
+        self.0.close().await;
     }
 
-    pub async fn begin_transaction(
+    pub(super) async fn transaction(
         &self,
-    ) -> Result<sqlx::Transaction<'static, sqlx::Sqlite>, sqlx::Error> {
-        self.db_pool.begin().await
+    ) -> sqlx::Result<sqlx::Transaction<'static, sqlx::Sqlite>> {
+        self.0.begin().await
     }
 
-    pub fn db_pool(&self) -> &sqlx::SqlitePool {
-        &self.db_pool
+    pub(super) fn pool(&self) -> &sqlx::SqlitePool {
+        &self.0
     }
 }
 
@@ -89,24 +77,19 @@ impl Cache {
 macro_rules! transaction {
     (begin: $cache:expr) => {
         $cache
-            .begin_transaction()
+            .db_transaction()
             .await
             .context("Failed to begin transaction")
-            .map_err($crate::error::Error::from)
     };
 
     (commit: $tx:expr) => {
-        $tx.commit()
-            .await
-            .context("Failed to commit transaction")
-            .map_err($crate::error::Error::from)
+        $tx.commit().await.context("Failed to commit transaction")
     };
 
     (rollback: $tx:expr) => {
         $tx.rollback()
             .await
             .context("Failed to rollback transaction")
-            .map_err($crate::error::Error::from)
     };
 }
 
@@ -116,7 +99,7 @@ pub async fn get_nar_info<'c, E>(
     hash: &nix::Hash,
 ) -> anyhow::Result<Option<nix::NarInfo>>
 where
-    E: sqlx::Executor<'c, Database = sqlx::Sqlite>,
+    E: sqlx::SqliteExecutor<'c>,
 {
     tracing::info!("Getting {}.narinfo from cache database", hash.string);
 
@@ -145,7 +128,7 @@ pub async fn get_nar_info_with_upstream<'c, E>(
     hash: &nix::Hash,
 ) -> anyhow::Result<Option<(nix::NarInfo, nix::Upstream)>>
 where
-    E: sqlx::Executor<'c, Database = sqlx::Sqlite>,
+    E: sqlx::SqliteExecutor<'c>,
 {
     tracing::info!(
         "Getting {}.narinfo and upstream from cache database",
@@ -180,7 +163,7 @@ pub async fn get_nar_file_path<'c, E>(
     hash: &nix::Hash,
 ) -> anyhow::Result<Option<PathBuf>>
 where
-    E: sqlx::Executor<'c, Database = sqlx::Sqlite>,
+    E: sqlx::SqliteExecutor<'c>,
 {
     tracing::info!("Getting file hash of {}.narinfo", hash.string);
 
@@ -206,7 +189,7 @@ where
             .parse()
             .context("Failed to parse compression type from cache db")?;
 
-        Ok(Some(nar_file_path_from_parts(
+        Ok(Some(cache::nar_file_path_from_parts(
             config,
             &file_hash,
             &compression,
@@ -230,7 +213,7 @@ pub async fn insert_nar_info<'c, E>(
     force: bool,
 ) -> anyhow::Result<()>
 where
-    E: sqlx::Executor<'c, Database = sqlx::Sqlite>,
+    E: sqlx::SqliteExecutor<'c>,
 {
     let entry = NarInfoEntry::from_nar_info(hash, nar_info);
     let upstream_url = upstream.url().to_string();
@@ -290,7 +273,7 @@ pub fn get_store_paths<'c, E>(
     executor: E,
 ) -> futures::stream::BoxStream<'c, anyhow::Result<nix::StorePath>>
 where
-    E: sqlx::Executor<'c, Database = sqlx::Sqlite> + 'c,
+    E: sqlx::SqliteExecutor<'c> + 'c,
 {
     tracing::info!("Getting all cached store paths");
 
@@ -315,7 +298,7 @@ where
 #[tracing::instrument]
 pub async fn purge_nar_info<'c, E>(executor: E, hash: &nix::Hash) -> anyhow::Result<()>
 where
-    E: sqlx::Executor<'c, Database = sqlx::Sqlite>,
+    E: sqlx::SqliteExecutor<'c>,
 {
     tracing::info!("Deleting entry for {}.narinfo", hash.string);
 
@@ -327,9 +310,9 @@ where
 }
 
 #[tracing::instrument(level = "debug")]
-pub async fn status<'c, E>(executor: E, hash: &nix::Hash) -> anyhow::Result<Option<Status>>
+pub async fn get_status<'c, E>(executor: E, hash: &nix::Hash) -> anyhow::Result<Option<Status>>
 where
-    E: sqlx::Executor<'c, Database = sqlx::Sqlite>,
+    E: sqlx::SqliteExecutor<'c>,
 {
     tracing::debug!("Querying status of {}.narinfo", hash.string);
 
@@ -348,7 +331,7 @@ pub async fn insert_status<'c, E>(
     status: Status,
 ) -> anyhow::Result<()>
 where
-    E: sqlx::Executor<'c, Database = sqlx::Sqlite>,
+    E: sqlx::SqliteExecutor<'c>,
 {
     tracing::debug!(
         "Inserting new cache entry for {}.narinfo with status: {status:?}",
@@ -369,7 +352,7 @@ pub async fn update_status<'c, E>(
     status: Status,
 ) -> anyhow::Result<()>
 where
-    E: sqlx::Executor<'c, Database = sqlx::Sqlite>,
+    E: sqlx::SqliteExecutor<'c>,
 {
     tracing::debug!("Updating status of {}.narinfo to {status:?}", hash.string);
 
@@ -384,9 +367,9 @@ where
     Ok(())
 }
 
-pub async fn reported_size<'c, E>(executor: E) -> anyhow::Result<u64>
+pub async fn get_reported_nar_size<'c, E>(executor: E) -> anyhow::Result<u64>
 where
-    E: sqlx::Executor<'c, Database = sqlx::Sqlite>,
+    E: sqlx::SqliteExecutor<'c>,
 {
     tracing::debug!("Getting reported size of cached nar files");
 
@@ -398,7 +381,7 @@ where
 
 pub async fn is_cached_by_hash<'c, E>(executor: E, hash: &nix::Hash) -> anyhow::Result<bool>
 where
-    E: sqlx::Executor<'c, Database = sqlx::Sqlite>,
+    E: sqlx::SqliteExecutor<'c>,
 {
     Ok(sqlx::query_scalar!(
         "SELECT 1 FROM cache WHERE hash = ? AND status = ?",
@@ -413,7 +396,7 @@ where
 // HACK: Added `Copy` trait by bypass moved value error, but disallows the use of `&mut _`
 pub async fn is_nar_file_cached<'c, E>(executor: E, nar_file: &nix::NarFile) -> anyhow::Result<bool>
 where
-    E: sqlx::Executor<'c, Database = sqlx::Sqlite> + Copy,
+    E: sqlx::SqliteExecutor<'c> + Copy,
 {
     let compression = nar_file.compression.to_string();
     let hash = match sqlx::query_scalar!(
@@ -429,59 +412,6 @@ where
     };
 
     is_cached_by_hash(executor, &nix::Hash::from_hash(hash)).await
-}
-
-pub async fn disk_size(config: &config::Config) -> tokio::io::Result<u64> {
-    tracing::debug!("Getting total cache disk size");
-    folder_size(&config.local_data_path).await
-}
-
-pub async fn nar_disk_size(config: &config::Config) -> tokio::io::Result<u64> {
-    tracing::debug!("Getting total cached nar file disk size");
-    folder_size(&config.local_data_path.join(NAR_FILE_DIR)).await
-}
-
-#[async_recursion::async_recursion]
-async fn folder_size(path: &std::path::Path) -> tokio::io::Result<u64> {
-    use tokio::fs;
-
-    let mut result = 0;
-
-    if path.is_dir() {
-        let mut read_dir = fs::read_dir(&path).await?;
-
-        while let Some(entry) = read_dir.next_entry().await? {
-            let p = entry.path();
-            if p.is_file() {
-                result += fs::metadata(p).await?.len();
-            } else {
-                result += folder_size(&p).await?;
-            }
-        }
-    } else {
-        result = fs::metadata(path).await?.len();
-    }
-
-    Ok(result)
-}
-
-pub fn nar_file_path(config: &config::Config, nar_info: &nix::NarInfo) -> PathBuf {
-    nar_file_path_from_parts(config, &nar_info.file_hash, &nar_info.compression)
-}
-
-pub fn nar_file_path_from_nar_file(config: &config::Config, nar_file: &nix::NarFile) -> PathBuf {
-    nar_file_path_from_parts(config, &nar_file.hash, &nar_file.compression)
-}
-
-fn nar_file_path_from_parts(
-    config: &config::Config,
-    file_hash: &nix::Hash,
-    compression: &nix::CompressionType,
-) -> PathBuf {
-    config
-        .local_data_path
-        .join(NAR_FILE_DIR)
-        .join(format!("{}.nar.{compression}", file_hash.string))
 }
 
 #[allow(dead_code)]

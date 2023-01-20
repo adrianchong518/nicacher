@@ -1,6 +1,8 @@
-use std::fmt;
-use std::path::{Path, PathBuf};
-use std::str::FromStr;
+use std::{
+    fmt,
+    path::{Path, PathBuf},
+    str::FromStr,
+};
 
 use derive_builder::Builder;
 use serde::{Deserialize, Serialize};

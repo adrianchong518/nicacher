@@ -1,8 +1,10 @@
 use crate::{app, cache, error, http, jobs, nix};
 
-use axum::extract::{Path, State};
-use axum::http::{header, Request, StatusCode};
-use axum::response::IntoResponse;
+use axum::{
+    extract::{Path, State},
+    http::{header, Request, StatusCode},
+    response::IntoResponse,
+};
 use serde_with::DeserializeFromStr;
 
 use anyhow::Context as _;
@@ -55,7 +57,7 @@ async fn get_nar_info(
 ) -> error::Result<impl IntoResponse> {
     tracing::info!("Request for {}.narinfo", hash.string);
 
-    let nar_info = cache::get_nar_info(cache.db_pool(), &hash)
+    let nar_info = cache::db::get_nar_info(cache.db_pool(), &hash)
         .await
         .with_context(|| {
             format!(
@@ -100,7 +102,7 @@ async fn get_nar_file(
     tracing::info!("Request for {nar_file}");
 
     let res = (|| async {
-        if cache::is_nar_file_cached(cache.db_pool(), &nar_file).await? {
+        if cache::db::is_nar_file_cached(cache.db_pool(), &nar_file).await? {
             let nar_file_path = cache::nar_file_path_from_nar_file(&config, &nar_file);
 
             Ok(tower_http::services::ServeFile::new_with_mime(

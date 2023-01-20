@@ -1,12 +1,7 @@
-use std::io;
-use std::path::Path;
-
-use std::str::FromStr as _;
-
-use futures::stream;
+use std::{io, path::Path, str::FromStr as _};
 
 use anyhow::Context as _;
-use futures::StreamExt as _;
+use futures::{stream, StreamExt as _};
 
 use crate::{cache, config, nix};
 

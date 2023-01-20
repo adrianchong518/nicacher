@@ -1,10 +1,11 @@
-use axum::extract::{Path, Query, State};
-use axum::http::StatusCode;
-use axum::response::IntoResponse;
-use serde::Deserialize;
-
 use anyhow::Context as _;
+use axum::{
+    extract::{Path, Query, State},
+    http::StatusCode,
+    response::IntoResponse,
+};
 use futures::TryStreamExt as _;
+use serde::Deserialize;
 
 use crate::{app, cache, error, fetch, jobs, nix};
 
@@ -24,7 +25,7 @@ async fn nar_status(
     Path(hash): Path<nix::Hash>,
     State(app::State { cache, .. }): State<app::State>,
 ) -> impl IntoResponse {
-    format!("{:#?}", cache::status(cache.db_pool(), &hash).await)
+    format!("{:#?}", cache::db::get_status(cache.db_pool(), &hash).await)
 }
 
 async fn cache_size(
@@ -38,7 +39,7 @@ async fn cache_size(
         .await
         .context("Failed to get total cached nar file disk size")?;
 
-    let reported_size = cache::reported_size(cache.db_pool())
+    let reported_size = cache::db::get_reported_nar_size(cache.db_pool())
         .await
         .context("Failed to get reported cache size")?;
 
@@ -79,7 +80,7 @@ async fn purge_nar(
         cache, mut workers, ..
     }): State<app::State>,
 ) -> error::Result<impl IntoResponse> {
-    let is_cached = cache::is_cached_by_hash(cache.db_pool(), &hash)
+    let is_cached = cache::db::is_cached_by_hash(cache.db_pool(), &hash)
         .await
         .with_context(|| format!("Failed to get information on {}.narinfo", hash.string))?;
 
@@ -120,7 +121,7 @@ async fn list_cached(
     Query(ListLimit { limit }): Query<ListLimit>,
     State(app::State { cache, .. }): State<app::State>,
 ) -> error::Result<impl IntoResponse> {
-    let cached_store_paths = cache::get_store_paths(cache.db_pool())
+    let cached_store_paths = cache::db::get_store_paths(cache.db_pool())
         .map_ok(|p| nix::StorePath::to_string(&p))
         .try_fold(
             String::new(),
@@ -144,7 +145,7 @@ async fn list_cache_diff(
 ) -> error::Result<impl IntoResponse> {
     use std::collections::BTreeSet;
 
-    let cached_store_paths = cache::get_store_paths(cache.db_pool())
+    let cached_store_paths = cache::db::get_store_paths(cache.db_pool())
         .try_collect()
         .await
         .context("Failed to get cached store paths")?;
