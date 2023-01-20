@@ -1,6 +1,16 @@
 {
   "db": "SQLite",
-  "2312464ef97747ef70c01a1652dffe6def89a0b310cba7829b912830d8a331a6": {
+  "2d7d187ab06ccc33a5933873de1b3285033590137a269bd19ec88a9f2acbee77": {
+    "describe": {
+      "columns": [],
+      "nullable": [],
+      "parameters": {
+        "Right": 14
+      }
+    },
+    "query": "REPLACE INTO narinfo VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
+  },
+  "2dd43910c0166feeb403acfbee7a2ef71362baf249012e0bc2e1eb8eaa82e121": {
     "describe": {
       "columns": [
         {
@@ -16,35 +26,7 @@
         "Right": 1
       }
     },
-    "query": "SELECT narinfo.store_path\n         FROM cache\n         INNER JOIN narinfo ON cache.hash = narinfo.hash\n         WHERE cache.status = ?"
-  },
-  "2d7d187ab06ccc33a5933873de1b3285033590137a269bd19ec88a9f2acbee77": {
-    "describe": {
-      "columns": [],
-      "nullable": [],
-      "parameters": {
-        "Right": 14
-      }
-    },
-    "query": "REPLACE INTO narinfo VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
-  },
-  "3c6d3b5653799c1bf4d5860029b36ad4567c525f707f832a7a072df44f09b023": {
-    "describe": {
-      "columns": [
-        {
-          "name": "status",
-          "ordinal": 0,
-          "type_info": "Int64"
-        }
-      ],
-      "nullable": [
-        false
-      ],
-      "parameters": {
-        "Right": 1
-      }
-    },
-    "query": "SELECT status FROM cache WHERE hash = ?"
+    "query": "SELECT narinfo.store_path\n             FROM cache\n             INNER JOIN narinfo ON cache.hash = narinfo.hash\n             WHERE cache.status = ?"
   },
   "6323c797f343bc894fef3e01e75b9423488c7ccfada2f0b2d0c82658b332dc5a": {
     "describe": {
@@ -63,96 +45,6 @@
       }
     },
     "query": "SELECT SUM(file_size) FROM narinfo"
-  },
-  "721652c3428a7153ea42abae763dc51528bb14d4120fddd269bcc75d880c0dbf": {
-    "describe": {
-      "columns": [
-        {
-          "name": "hash",
-          "ordinal": 0,
-          "type_info": "Text"
-        },
-        {
-          "name": "store_path",
-          "ordinal": 1,
-          "type_info": "Text"
-        },
-        {
-          "name": "compression",
-          "ordinal": 2,
-          "type_info": "Text"
-        },
-        {
-          "name": "file_hash_method",
-          "ordinal": 3,
-          "type_info": "Text"
-        },
-        {
-          "name": "file_hash",
-          "ordinal": 4,
-          "type_info": "Text"
-        },
-        {
-          "name": "file_size",
-          "ordinal": 5,
-          "type_info": "Int64"
-        },
-        {
-          "name": "nar_hash_method",
-          "ordinal": 6,
-          "type_info": "Text"
-        },
-        {
-          "name": "nar_hash",
-          "ordinal": 7,
-          "type_info": "Text"
-        },
-        {
-          "name": "nar_size",
-          "ordinal": 8,
-          "type_info": "Int64"
-        },
-        {
-          "name": "deriver",
-          "ordinal": 9,
-          "type_info": "Text"
-        },
-        {
-          "name": "system",
-          "ordinal": 10,
-          "type_info": "Text"
-        },
-        {
-          "name": "refs",
-          "ordinal": 11,
-          "type_info": "Text"
-        },
-        {
-          "name": "signature",
-          "ordinal": 12,
-          "type_info": "Text"
-        }
-      ],
-      "nullable": [
-        false,
-        false,
-        false,
-        false,
-        false,
-        false,
-        false,
-        false,
-        false,
-        true,
-        true,
-        false,
-        true
-      ],
-      "parameters": {
-        "Right": 1
-      }
-    },
-    "query": "SELECT * FROM narinfo_fields_view WHERE hash = ?1;"
   },
   "7299b4fb38caf2fdeb2a62a08692e8ed0d83da20e3956dfdac543d07d9007f46": {
     "describe": {
@@ -184,101 +76,23 @@
     },
     "query": "DELETE FROM cache WHERE hash = ?1"
   },
-  "855e5bff2ed5bb122582e1bd0b2b253e28f36fdae02acd43db3f8c26589acb21": {
+  "8b9b0eb9955c0a9b5c9843fe12ad1206bf04738ce782f067bd6357e531156043": {
     "describe": {
       "columns": [
         {
-          "name": "hash",
+          "name": "status: Status",
           "ordinal": 0,
-          "type_info": "Text"
-        },
-        {
-          "name": "store_path",
-          "ordinal": 1,
-          "type_info": "Text"
-        },
-        {
-          "name": "compression",
-          "ordinal": 2,
-          "type_info": "Text"
-        },
-        {
-          "name": "file_hash_method",
-          "ordinal": 3,
-          "type_info": "Text"
-        },
-        {
-          "name": "file_hash",
-          "ordinal": 4,
-          "type_info": "Text"
-        },
-        {
-          "name": "file_size",
-          "ordinal": 5,
           "type_info": "Int64"
-        },
-        {
-          "name": "nar_hash_method",
-          "ordinal": 6,
-          "type_info": "Text"
-        },
-        {
-          "name": "nar_hash",
-          "ordinal": 7,
-          "type_info": "Text"
-        },
-        {
-          "name": "nar_size",
-          "ordinal": 8,
-          "type_info": "Int64"
-        },
-        {
-          "name": "deriver",
-          "ordinal": 9,
-          "type_info": "Text"
-        },
-        {
-          "name": "system",
-          "ordinal": 10,
-          "type_info": "Text"
-        },
-        {
-          "name": "refs",
-          "ordinal": 11,
-          "type_info": "Text"
-        },
-        {
-          "name": "signature",
-          "ordinal": 12,
-          "type_info": "Text"
-        },
-        {
-          "name": "upstream_url",
-          "ordinal": 13,
-          "type_info": "Text"
         }
       ],
       "nullable": [
-        false,
-        false,
-        false,
-        false,
-        false,
-        false,
-        false,
-        false,
-        false,
-        true,
-        true,
-        false,
-        true,
         false
       ],
       "parameters": {
         "Right": 1
       }
     },
-    "query": "SELECT * FROM narinfo WHERE hash = ?1;"
+    "query": "SELECT status as \"status: Status\" FROM cache WHERE hash = ?"
   },
   "96260cf3d160b7eb63e8afe770d1aab7f567df5cd21fc03876edd1ace6f1fcb9": {
     "describe": {
@@ -337,6 +151,24 @@
       }
     },
     "query": "PRAGMA temp_store = MEMORY;"
+  },
+  "c03a08f0f2a15b566ed81d3f3b3ce6ca2ec43febb1efa8445ff63c06c12ee3d7": {
+    "describe": {
+      "columns": [
+        {
+          "name": "1",
+          "ordinal": 0,
+          "type_info": "Int"
+        }
+      ],
+      "nullable": [
+        false
+      ],
+      "parameters": {
+        "Right": 2
+      }
+    },
+    "query": "SELECT 1 FROM cache WHERE hash = ? AND status = ?"
   },
   "cd6d2e7f5058cac4a9b8039c9398f955dfada5ae59b99901122f528585b46254": {
     "describe": {

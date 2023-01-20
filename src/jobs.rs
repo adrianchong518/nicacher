@@ -214,6 +214,8 @@ async fn cache_nar(
             return Ok(JobResult::Retry);
         }
     } else {
+        // TODO: detect if fetch is unsuccessful
+
         let (nar_info, upstream) = fetch::request_nar_info(config, &hash)
             .await
             .context("Error when requesting narinfo")

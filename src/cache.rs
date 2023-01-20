@@ -2,7 +2,7 @@ use std::path::PathBuf;
 use std::str::FromStr;
 
 use anyhow::Context as _;
-use futures::{StreamExt as _, TryStreamExt as _};
+use futures::StreamExt as _;
 
 use crate::{config, nix};
 
@@ -14,10 +14,12 @@ pub struct Cache {
     db_pool: sqlx::SqlitePool,
 }
 
-#[derive(Clone, Copy, Debug, num_enum::IntoPrimitive, num_enum::FromPrimitive)]
+#[derive(
+    Clone, Copy, Debug, Default, num_enum::IntoPrimitive, num_enum::FromPrimitive, sqlx::Type,
+)]
 #[repr(i64)]
 pub enum Status {
-    #[num_enum(default)]
+    #[default]
     NotAvailable,
     Fetching,
     OnlyInfo,
@@ -118,13 +120,11 @@ where
 {
     tracing::info!("Getting {}.narinfo from cache database", hash.string);
 
-    let entry = sqlx::query_as!(
-        NarInfoEntry,
-        "SELECT * FROM narinfo_fields_view WHERE hash = ?1;",
-        hash.string
-    )
-    .fetch_optional(executor)
-    .await?;
+    let entry: Option<NarInfoEntry> =
+        sqlx::query_as("SELECT * FROM narinfo_fields_view WHERE hash = ?")
+            .bind(&hash.string)
+            .fetch_optional(executor)
+            .await?;
 
     if let Some(entry) = entry {
         tracing::debug!("Found narinfo entry in database");
@@ -152,13 +152,11 @@ where
         hash.string
     );
 
-    let entry = sqlx::query_as!(
-        NarInfoWithUpstreamEntry,
-        "SELECT * FROM narinfo WHERE hash = ?1;",
-        hash.string
-    )
-    .fetch_optional(executor)
-    .await?;
+    let entry: Option<NarInfoWithUpstreamEntry> =
+        sqlx::query_as("SELECT * FROM narinfo WHERE hash = ?")
+            .bind(&hash.string)
+            .fetch_optional(executor)
+            .await?;
 
     if let Some(entry) = entry {
         tracing::debug!("Found narinfo entry in database");
@@ -193,7 +191,7 @@ where
             file_hash AS hash,
             compression
         FROM narinfo
-        WHERE hash = ?1",
+        WHERE hash = ?",
         hash.string
     )
     .fetch_optional(executor)
@@ -292,18 +290,17 @@ pub fn get_store_paths<'c, E>(
     executor: E,
 ) -> futures::stream::BoxStream<'c, anyhow::Result<nix::StorePath>>
 where
-    E: sqlx::Executor<'c, Database = sqlx::Sqlite>,
+    E: sqlx::Executor<'c, Database = sqlx::Sqlite> + 'c,
 {
     tracing::info!("Getting all cached store paths");
 
-    let status: i64 = Status::Available.into();
     Box::pin(
         sqlx::query_scalar!(
             "SELECT narinfo.store_path
-         FROM cache
-         INNER JOIN narinfo ON cache.hash = narinfo.hash
-         WHERE cache.status = ?",
-            i64::from(Status::Available)
+             FROM cache
+             INNER JOIN narinfo ON cache.hash = narinfo.hash
+             WHERE cache.status = ?",
+            Status::Available
         )
         .fetch(executor)
         .map(|path_opt| -> anyhow::Result<_> {
@@ -322,7 +319,7 @@ where
 {
     tracing::info!("Deleting entry for {}.narinfo", hash.string);
 
-    sqlx::query!("DELETE FROM cache WHERE hash = ?1", hash.string)
+    sqlx::query!("DELETE FROM cache WHERE hash = ?", hash.string)
         .execute(executor)
         .await?;
 
@@ -337,7 +334,7 @@ where
     tracing::debug!("Querying status of {}.narinfo", hash.string);
 
     Ok(
-        sqlx::query_scalar!("SELECT status FROM cache WHERE hash = ?", hash.string)
+        sqlx::query_scalar!(r#"SELECT status FROM cache WHERE hash = ?"#, hash.string)
             .fetch_optional(executor)
             .await?
             .map(Status::from),
@@ -358,7 +355,6 @@ where
         hash.string
     );
 
-    let status: i64 = status.into();
     sqlx::query!("INSERT INTO cache VALUES (?,?)", hash.string, status)
         .execute(executor)
         .await?;
@@ -377,7 +373,6 @@ where
 {
     tracing::debug!("Updating status of {}.narinfo to {status:?}", hash.string);
 
-    let status: i64 = status.into();
     sqlx::query!(
         "UPDATE cache SET status = ? WHERE hash = ?",
         status,
@@ -405,13 +400,14 @@ pub async fn is_cached_by_hash<'c, E>(executor: E, hash: &nix::Hash) -> anyhow::
 where
     E: sqlx::Executor<'c, Database = sqlx::Sqlite>,
 {
-    Ok(
-        sqlx::query_scalar!("SELECT status FROM cache WHERE hash = ?", hash.string)
-            .fetch_optional(executor)
-            .await?
-            .map(|status| matches!(Status::from(status), Status::Available))
-            .unwrap_or_default(),
+    Ok(sqlx::query_scalar!(
+        "SELECT 1 FROM cache WHERE hash = ? AND status = ?",
+        hash.string,
+        Status::Available
     )
+    .fetch_optional(executor)
+    .await?
+    .is_some())
 }
 
 // HACK: Added `Copy` trait by bypass moved value error, but disallows the use of `&mut _`
@@ -585,56 +581,14 @@ impl TryFrom<NarInfoEntry> for nix::NarInfo {
 #[allow(dead_code)]
 #[derive(Debug, sqlx::FromRow)]
 struct NarInfoWithUpstreamEntry {
-    hash: String,
-    store_path: String,
-    compression: String,
-    file_hash_method: String,
-    file_hash: String,
-    file_size: i64,
-    nar_hash_method: String,
-    nar_hash: String,
-    nar_size: i64,
-    deriver: Option<String>,
-    system: Option<String>,
-    refs: String,
-    signature: Option<String>,
+    #[sqlx(flatten)]
+    nar_info_entry: NarInfoEntry,
     upstream_url: String,
 }
 
 impl From<NarInfoWithUpstreamEntry> for NarInfoEntry {
-    fn from(
-        NarInfoWithUpstreamEntry {
-            hash,
-            store_path,
-            compression,
-            file_hash_method,
-            file_hash,
-            file_size,
-            nar_hash_method,
-            nar_hash,
-            nar_size,
-            deriver,
-            system,
-            refs,
-            signature,
-            ..
-        }: NarInfoWithUpstreamEntry,
-    ) -> Self {
-        NarInfoEntry {
-            hash,
-            store_path,
-            compression,
-            file_hash_method,
-            file_hash,
-            file_size,
-            nar_hash_method,
-            nar_hash,
-            nar_size,
-            deriver,
-            system,
-            refs,
-            signature,
-        }
+    fn from(NarInfoWithUpstreamEntry { nar_info_entry, .. }: NarInfoWithUpstreamEntry) -> Self {
+        nar_info_entry
     }
 }
 
