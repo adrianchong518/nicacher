@@ -288,30 +288,31 @@ where
 }
 
 #[tracing::instrument]
-pub async fn get_store_paths<'c, E, T>(executor: E) -> anyhow::Result<T>
+pub fn get_store_paths<'c, E>(
+    executor: E,
+) -> futures::stream::BoxStream<'c, anyhow::Result<nix::StorePath>>
 where
     E: sqlx::Executor<'c, Database = sqlx::Sqlite>,
-    T: Extend<nix::StorePath> + Default,
 {
     tracing::info!("Getting all cached store paths");
 
     let status: i64 = Status::Available.into();
-    sqlx::query_scalar!(
-        "SELECT narinfo.store_path
+    Box::pin(
+        sqlx::query_scalar!(
+            "SELECT narinfo.store_path
          FROM cache
          INNER JOIN narinfo ON cache.hash = narinfo.hash
          WHERE cache.status = ?",
-        status
+            i64::from(Status::Available)
+        )
+        .fetch(executor)
+        .map(|path_opt| -> anyhow::Result<_> {
+            match path_opt {
+                Ok(path) => Ok(nix::StorePath::from_str(&path)?),
+                Err(err) => Err(err.into()),
+            }
+        }),
     )
-    .fetch(executor)
-    .map(|path_opt| -> anyhow::Result<_> {
-        match path_opt {
-            Ok(path) => Ok(nix::StorePath::from_str(&path)?),
-            Err(err) => Err(err.into()),
-        }
-    })
-    .try_collect::<T>()
-    .await
 }
 
 #[tracing::instrument]

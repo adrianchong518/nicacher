@@ -4,6 +4,7 @@ use axum::response::IntoResponse;
 use serde::Deserialize;
 
 use anyhow::Context as _;
+use futures::TryStreamExt as _;
 
 use crate::{app, cache, error, fetch, jobs, nix};
 
@@ -119,7 +120,12 @@ async fn list_cached(
     Query(ListLimit { limit }): Query<ListLimit>,
     State(app::State { cache, .. }): State<app::State>,
 ) -> error::Result<impl IntoResponse> {
-    let cached_store_paths = cache::get_store_paths::<_, Vec<_>>(cache.db_pool())
+    let cached_store_paths = cache::get_store_paths(cache.db_pool())
+        .map_ok(|p| nix::StorePath::to_string(&p))
+        .try_fold(
+            String::new(),
+            |acc, path| async move { Ok(acc + "\n" + &path) },
+        )
         .await
         .context("Failed to get cached store paths")?;
 
@@ -129,11 +135,6 @@ Store paths of cached derivations: (limit: {limit})
 
 {}",
         cached_store_paths
-            .iter()
-            .take(limit)
-            .map(nix::StorePath::to_string)
-            .reduce(|acc, path| acc + "\n" + &path)
-            .unwrap()
     ))
 }
 
@@ -143,7 +144,8 @@ async fn list_cache_diff(
 ) -> error::Result<impl IntoResponse> {
     use std::collections::BTreeSet;
 
-    let cached_store_paths = cache::get_store_paths::<_, BTreeSet<_>>(cache.db_pool())
+    let cached_store_paths = cache::get_store_paths(cache.db_pool())
+        .try_collect()
         .await
         .context("Failed to get cached store paths")?;
 
