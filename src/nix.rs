@@ -354,6 +354,12 @@ impl StorePath {
     }
 }
 
+impl std::hash::Hash for StorePath {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.path().hash(state);
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum StorePathParseError {
     #[error("Invalid Store Path: {0:?}")]

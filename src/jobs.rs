@@ -80,14 +80,13 @@ impl Workers {
             }};
         }
 
-        let monitor = Monitor::new()
-            .register_with_count(4, |_| {
-                WorkerBuilder::new(self.storage())
-                    .layer(TraceLayer::new().make_span_with(custom_make_span))
-                    .layer(Extension(state.clone()))
-                    .build_fn(dispatch_jobs)
-            })
-            .register(new_cron_worker!("*/5 * * * * *" => Job::Test));
+        let monitor = Monitor::new().register_with_count(4, |_| {
+            WorkerBuilder::new(self.storage())
+                .layer(TraceLayer::new().make_span_with(custom_make_span))
+                .layer(Extension(state.clone()))
+                .build_fn(dispatch_jobs)
+        });
+        // .register(new_cron_worker!("*/5 * * * * *" => Job::Test));
 
         tracing::info!("Starting workers");
 

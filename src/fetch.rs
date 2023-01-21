@@ -1,14 +1,28 @@
-use std::{io, path::Path, str::FromStr as _};
+use std::{collections::HashSet, io, path::Path, str::FromStr as _};
 
 use anyhow::Context as _;
-use futures::{stream, StreamExt as _};
+use futures::{stream, StreamExt as _, TryStreamExt as _};
 
 use crate::{cache, config, nix};
 
 const STORE_PATHS_FILE: &str = "store-paths.xz";
 
+pub async fn request_all_channel_stores(
+    config: &config::Config,
+) -> anyhow::Result<HashSet<nix::StorePath>> {
+    tracing::info!("Requesting the store paths of all configured channels");
+
+    stream::iter(config.channels.iter())
+        .then(|channel| request_channel_store::<Vec<_>>(config, channel))
+        .try_fold(HashSet::new(), |mut set, paths| async {
+            set.extend(paths.into_iter());
+            Ok(set)
+        })
+        .await
+}
+
 #[tracing::instrument(skip(config))]
-pub async fn request_store_paths<T>(
+pub async fn request_channel_store<T>(
     config: &config::Config,
     channel: &nix::Channel,
 ) -> anyhow::Result<T>

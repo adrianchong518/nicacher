@@ -2,7 +2,10 @@ pub mod db;
 
 use std::{collections::HashSet, path::PathBuf};
 
-use crate::{config, error, nix};
+use anyhow::Context as _;
+use futures::TryStreamExt as _;
+
+use crate::{config, fetch, nix};
 
 const NAR_FILE_DIR: &str = "nar";
 
@@ -55,10 +58,25 @@ pub async fn nar_disk_size(config: &config::Config) -> tokio::io::Result<u64> {
     folder_size(&config.local_data_path.join(NAR_FILE_DIR)).await
 }
 
+#[tracing::instrument(skip_all)]
 pub async fn missing_from_channel_upstreams(
     config: &config::Config,
-) -> error::Result<HashSet<nix::StorePath>> {
-    todo!()
+    cache: &Cache,
+) -> anyhow::Result<HashSet<nix::StorePath>> {
+    let cached_store_paths = db::get_store_paths(cache.db_pool())
+        .try_collect::<HashSet<_>>()
+        .await
+        .context("Failed to get cached store paths")?;
+
+    let upstream_store_paths = fetch::request_all_channel_stores(config)
+        .await
+        .context("Failed to request up-to-date store paths from channel upstreams")?;
+
+    tracing::debug!("Proccessing difference between local cache and upstream");
+    Ok(upstream_store_paths
+        .difference(&cached_store_paths)
+        .map(Clone::clone)
+        .collect())
 }
 
 #[async_recursion::async_recursion]

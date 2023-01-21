@@ -143,22 +143,8 @@ async fn list_cache_diff(
     Query(ListLimit { limit }): Query<ListLimit>,
     State(app::State { config, cache, .. }): State<app::State>,
 ) -> error::Result<impl IntoResponse> {
-    use std::collections::BTreeSet;
-
-    let cached_store_paths = cache::db::get_store_paths(cache.db_pool())
-        .try_collect()
-        .await
-        .context("Failed to get cached store paths")?;
-
-    let upstream_store_paths =
-        fetch::request_store_paths::<BTreeSet<_>>(&config, &config.channels[0])
-            .await
-            .context("Failed to request up-to-date store paths")?;
-
-    tracing::debug!("Proccessing difference between local cache and upstream");
-
-    let diff = upstream_store_paths.difference(&cached_store_paths);
-    let diff_len = diff.clone().count();
+    let diff = cache::missing_from_channel_upstreams(&config, &cache).await?;
+    let diff_len = diff.len();
 
     if diff_len == 0 {
         Ok("No missing derivations from cache".to_string())
@@ -170,7 +156,8 @@ Number of missing derivations from cache: {diff_len}
 Store paths of missing derivations: (limit: {limit})
 
 {}",
-            diff.take(limit)
+            diff.iter()
+                .take(limit)
                 .map(nix::StorePath::to_string)
                 .reduce(|acc, path| acc + "\n" + &path)
                 .unwrap()
