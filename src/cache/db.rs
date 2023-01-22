@@ -10,8 +10,15 @@ const CACHE_DB_FILE: &str = "cache.db";
 #[derive(Clone, Debug)]
 pub(super) struct Database(sqlx::SqlitePool);
 
+#[derive(Debug, sqlx::FromRow)]
+pub struct Entry {
+    status: Status,
+    last_cached: chrono::NaiveDateTime,
+    last_accessed: Option<chrono::NaiveDateTime>,
+}
+
 #[derive(
-    Clone, Copy, Debug, Default, num_enum::IntoPrimitive, num_enum::FromPrimitive, sqlx::Type,
+    Clone, Copy, Debug, Default, num_enum::IntoPrimitive, num_enum::FromPrimitive, sqlx::Encode,
 )]
 #[repr(i64)]
 pub enum Status {
@@ -21,6 +28,33 @@ pub enum Status {
     OnlyInfo,
     Available,
     Purging,
+}
+
+impl<DB> sqlx::Type<DB> for Status
+where
+    DB: sqlx::Database,
+    i64: sqlx::Type<DB>,
+{
+    fn type_info() -> <DB as sqlx::Database>::TypeInfo {
+        <i64 as sqlx::Type<DB>>::type_info()
+    }
+
+    fn compatible(ty: &<DB as sqlx::Database>::TypeInfo) -> bool {
+        <i64 as sqlx::Type<DB>>::compatible(ty)
+    }
+}
+
+impl<'r, DB> sqlx::Decode<'r, DB> for Status
+where
+    DB: sqlx::Database,
+    i64: sqlx::Decode<'r, DB>,
+{
+    fn decode(
+        value: <DB as sqlx::database::HasValueRef<'r>>::ValueRef,
+    ) -> Result<Self, sqlx::error::BoxDynError> {
+        let value = <i64 as sqlx::Decode<DB>>::decode(value)?;
+        Ok(Status::from(value))
+    }
 }
 
 // TODO: Check for way to see if DELETE/UPDATE is successful
@@ -50,7 +84,7 @@ impl Database {
             .await?;
 
         tracing::info!("Migrating cache database");
-        sqlx::query!("PRAGMA temp_store = MEMORY;")
+        sqlx::query!(r#"PRAGMA temp_store = MEMORY;"#)
             .execute(&db_pool)
             .await?;
         sqlx::migrate!().run(&db_pool).await?;
@@ -103,11 +137,30 @@ where
 {
     tracing::info!("Getting {}.narinfo from cache database", hash.string);
 
-    let entry: Option<NarInfoEntry> =
-        sqlx::query_as("SELECT * FROM narinfo_fields_view WHERE hash = ?")
-            .bind(&hash.string)
-            .fetch_optional(executor)
-            .await?;
+    let entry = sqlx::query_as!(
+        NarInfoEntry,
+        r#"
+            SELECT
+                hash,
+                store_path,
+                compression,
+                file_hash_method,
+                file_hash,
+                file_size,
+                nar_hash_method,
+                nar_hash,
+                nar_size,
+                deriver,
+                system,
+                refs,
+                signature
+            FROM narinfo
+            WHERE hash = ?
+        "#,
+        hash.string
+    )
+    .fetch_optional(executor)
+    .await?;
 
     if let Some(entry) = entry {
         tracing::debug!("Found narinfo entry in database");
@@ -135,11 +188,16 @@ where
         hash.string
     );
 
-    let entry: Option<NarInfoWithUpstreamEntry> =
-        sqlx::query_as("SELECT * FROM narinfo WHERE hash = ?")
-            .bind(&hash.string)
-            .fetch_optional(executor)
-            .await?;
+    let entry: Option<NarInfoWithUpstreamEntry> = sqlx::query_as(
+        r#"
+            SELECT *
+            FROM narinfo
+            WHERE hash = ?
+        "#,
+    )
+    .bind(&hash.string)
+    .fetch_optional(executor)
+    .await?;
 
     if let Some(entry) = entry {
         tracing::debug!("Found narinfo entry in database");
@@ -168,13 +226,14 @@ where
     tracing::info!("Getting file hash of {}.narinfo", hash.string);
 
     let entry = sqlx::query!(
-        "
-        SELECT
-            file_hash_method AS method,
-            file_hash AS hash,
-            compression
-        FROM narinfo
-        WHERE hash = ?",
+        r#"
+            SELECT
+                file_hash_method AS method,
+                file_hash AS hash,
+                compression
+            FROM narinfo
+            WHERE hash = ?
+        "#,
         hash.string
     )
     .fetch_optional(executor)
@@ -225,7 +284,10 @@ where
         );
 
         sqlx::query!(
-            "REPLACE INTO narinfo VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            r#"
+                REPLACE INTO narinfo
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            "#,
             entry.hash,
             entry.store_path,
             entry.compression,
@@ -245,7 +307,10 @@ where
         tracing::info!("Inserting {}.narinfo into cache database", hash.string);
 
         sqlx::query!(
-            "INSERT INTO narinfo VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            r#"
+                INSERT INTO narinfo
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            "#,
             entry.hash,
             entry.store_path,
             entry.compression,
@@ -279,10 +344,12 @@ where
 
     Box::pin(
         sqlx::query_scalar!(
-            "SELECT narinfo.store_path
-             FROM cache
-             INNER JOIN narinfo ON cache.hash = narinfo.hash
-             WHERE cache.status = ?",
+            r#"
+                SELECT narinfo.store_path
+                FROM cache
+                INNER JOIN narinfo ON cache.hash = narinfo.hash
+                WHERE cache.status = ?
+            "#,
             Status::Available
         )
         .fetch(executor)
@@ -302,11 +369,40 @@ where
 {
     tracing::info!("Deleting entry for {}.narinfo", hash.string);
 
-    sqlx::query!("DELETE FROM cache WHERE hash = ?", hash.string)
-        .execute(executor)
-        .await?;
+    sqlx::query!(
+        r#"
+            DELETE FROM cache
+            WHERE hash = ?
+        "#,
+        hash.string
+    )
+    .execute(executor)
+    .await?;
 
     Ok(())
+}
+
+#[tracing::instrument(level = "debug")]
+pub async fn get_entry<'c, E>(executor: E, hash: &nix::Hash) -> anyhow::Result<Option<Entry>>
+where
+    E: sqlx::SqliteExecutor<'c>,
+{
+    tracing::debug!("Querying entry details of {}.narinfo", hash.string);
+
+    Ok(sqlx::query_as!(
+        Entry,
+        r#"
+            SELECT
+                status as "status: Status",
+                last_cached,
+                last_accessed
+            FROM cache
+            WHERE hash = ?
+        "#,
+        hash.string
+    )
+    .fetch_optional(executor)
+    .await?)
 }
 
 #[tracing::instrument(level = "debug")]
@@ -316,12 +412,16 @@ where
 {
     tracing::debug!("Querying status of {}.narinfo", hash.string);
 
-    Ok(
-        sqlx::query_scalar!(r#"SELECT status FROM cache WHERE hash = ?"#, hash.string)
-            .fetch_optional(executor)
-            .await?
-            .map(Status::from),
+    Ok(sqlx::query_scalar!(
+        r#"
+            SELECT status as "status: Status"
+            FROM cache
+            WHERE hash = ?
+        "#,
+        hash.string
     )
+    .fetch_optional(executor)
+    .await?)
 }
 
 #[tracing::instrument(level = "debug")]
@@ -338,9 +438,16 @@ where
         hash.string
     );
 
-    sqlx::query!("INSERT INTO cache VALUES (?,?)", hash.string, status)
-        .execute(executor)
-        .await?;
+    sqlx::query!(
+        r#"
+            INSERT INTO cache (hash, status)
+            VALUES (?,?)
+        "#,
+        hash.string,
+        status
+    )
+    .execute(executor)
+    .await?;
 
     Ok(())
 }
@@ -357,7 +464,11 @@ where
     tracing::debug!("Updating status of {}.narinfo to {status:?}", hash.string);
 
     sqlx::query!(
-        "UPDATE cache SET status = ? WHERE hash = ?",
+        r#"
+            UPDATE cache
+            SET status = ?
+            WHERE hash = ?
+        "#,
         status,
         hash.string
     )
@@ -367,24 +478,34 @@ where
     Ok(())
 }
 
+#[tracing::instrument(level = "debug")]
 pub async fn get_reported_nar_size<'c, E>(executor: E) -> anyhow::Result<u64>
 where
     E: sqlx::SqliteExecutor<'c>,
 {
     tracing::debug!("Getting reported size of cached nar files");
 
-    Ok(sqlx::query_scalar!("SELECT SUM(file_size) FROM narinfo")
-        .fetch_one(executor)
-        .await?
-        .unwrap_or_default() as u64)
+    Ok(sqlx::query_scalar!(
+        r#"
+            SELECT SUM(file_size) FROM narinfo
+        "#
+    )
+    .fetch_one(executor)
+    .await?
+    .unwrap_or_default() as u64)
 }
 
+#[tracing::instrument(level = "debug")]
 pub async fn is_cached_by_hash<'c, E>(executor: E, hash: &nix::Hash) -> anyhow::Result<bool>
 where
     E: sqlx::SqliteExecutor<'c>,
 {
     Ok(sqlx::query_scalar!(
-        "SELECT 1 FROM cache WHERE hash = ? AND status = ?",
+        r#"
+            SELECT 1
+            FROM cache
+            WHERE hash = ? AND status = ?
+        "#,
         hash.string,
         Status::Available
     )
@@ -400,7 +521,11 @@ where
 {
     let compression = nar_file.compression.to_string();
     let hash = match sqlx::query_scalar!(
-        r#"SELECT hash FROM narinfo WHERE file_hash = ? AND compression = ?"#,
+        r#"
+            SELECT hash
+            FROM narinfo
+            WHERE file_hash = ? AND compression = ?
+        "#,
         nar_file.hash.string,
         compression
     )

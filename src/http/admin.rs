@@ -7,7 +7,7 @@ use axum::{
 use futures::TryStreamExt as _;
 use serde::Deserialize;
 
-use crate::{app, cache, error, fetch, jobs, nix};
+use crate::{app, cache, error, jobs, nix};
 
 pub(super) fn router() -> axum::Router<app::State> {
     use axum::routing::get;
@@ -17,15 +17,29 @@ pub(super) fn router() -> axum::Router<app::State> {
         .route("/list_cached", get(list_cached))
         .route("/list_cache_diff", get(list_cache_diff))
         .route("/nar_status/:hash", get(nar_status))
+        .route("/nar_entry/:hash", get(nar_entry))
         .route("/cache_nar/:hash", get(cache_nar))
         .route("/purge_nar/:hash", get(purge_nar))
+}
+
+async fn nar_entry(
+    Path(hash): Path<nix::Hash>,
+    State(app::State { cache, .. }): State<app::State>,
+) -> error::Result<impl IntoResponse> {
+    Ok(format!(
+        "{:#?}",
+        cache::db::get_entry(cache.db_pool(), &hash).await?
+    ))
 }
 
 async fn nar_status(
     Path(hash): Path<nix::Hash>,
     State(app::State { cache, .. }): State<app::State>,
-) -> impl IntoResponse {
-    format!("{:#?}", cache::db::get_status(cache.db_pool(), &hash).await)
+) -> error::Result<impl IntoResponse> {
+    Ok(format!(
+        "{:#?}",
+        cache::db::get_status(cache.db_pool(), &hash).await?
+    ))
 }
 
 async fn cache_size(

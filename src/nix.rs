@@ -50,7 +50,8 @@ Compression: {}
 FileHash: {}
 FileSize: {}
 NarHash: {}
-NarSize: {}",
+NarSize: {}
+",
             self.store_path,
             self.url,
             self.compression,
@@ -73,7 +74,7 @@ NarSize: {}",
         writeln!(f)?;
 
         if let Some(ref signature) = self.signature {
-            write!(f, "Sig: {signature}")?;
+            writeln!(f, "Sig: {signature}")?;
         }
 
         Ok(())
