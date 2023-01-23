@@ -333,14 +333,14 @@ where
     Ok(())
 }
 
-#[tracing::instrument]
+#[tracing::instrument(level = "debug")]
 pub fn get_store_paths<'c, E>(
     executor: E,
 ) -> futures::stream::BoxStream<'c, anyhow::Result<nix::StorePath>>
 where
     E: sqlx::SqliteExecutor<'c> + 'c,
 {
-    tracing::info!("Getting all cached store paths");
+    tracing::debug!("Getting all cached store paths");
 
     Box::pin(
         sqlx::query_scalar!(
@@ -360,6 +360,25 @@ where
             }
         }),
     )
+}
+
+#[tracing::instrument(level = "debug")]
+pub async fn get_num_store_paths<'c, E>(executor: E) -> anyhow::Result<usize>
+where
+    E: sqlx::SqliteExecutor<'c>,
+{
+    tracing::debug!("Getting number of cached store paths");
+
+    Ok(sqlx::query_scalar!(
+        r#"
+            SELECT COUNT(*)
+            FROM cache
+            WHERE status = ?
+        "#,
+        Status::Available
+    )
+    .fetch_one(executor)
+    .await? as usize)
 }
 
 #[tracing::instrument]
@@ -406,6 +425,54 @@ where
 }
 
 #[tracing::instrument(level = "debug")]
+pub async fn set_last_cached<'c, E>(executor: E, hash: &nix::Hash) -> anyhow::Result<()>
+where
+    E: sqlx::SqliteExecutor<'c>,
+{
+    tracing::debug!(
+        "Setting last_cached datetime of {}.narinfo to current time",
+        hash.string
+    );
+
+    sqlx::query!(
+        r#"
+            UPDATE cache
+            SET last_cached = CURRENT_TIMESTAMP
+            WHERE hash = ?
+        "#,
+        hash.string,
+    )
+    .execute(executor)
+    .await?;
+
+    Ok(())
+}
+
+#[tracing::instrument(level = "debug")]
+pub async fn set_last_accessed<'c, E>(executor: E, hash: &nix::Hash) -> anyhow::Result<()>
+where
+    E: sqlx::SqliteExecutor<'c>,
+{
+    tracing::debug!(
+        "Setting last_accessed datetime of {}.narinfo to current time",
+        hash.string
+    );
+
+    sqlx::query!(
+        r#"
+            UPDATE cache
+            SET last_accessed = CURRENT_TIMESTAMP
+            WHERE hash = ?
+        "#,
+        hash.string,
+    )
+    .execute(executor)
+    .await?;
+
+    Ok(())
+}
+
+#[tracing::instrument(level = "debug")]
 pub async fn get_status<'c, E>(executor: E, hash: &nix::Hash) -> anyhow::Result<Option<Status>>
 where
     E: sqlx::SqliteExecutor<'c>,
@@ -425,23 +492,18 @@ where
 }
 
 #[tracing::instrument(level = "debug")]
-pub async fn insert_status<'c, E>(
-    executor: E,
-    hash: &nix::Hash,
-    status: Status,
-) -> anyhow::Result<()>
+pub async fn set_status<'c, E>(executor: E, hash: &nix::Hash, status: Status) -> anyhow::Result<()>
 where
     E: sqlx::SqliteExecutor<'c>,
 {
-    tracing::debug!(
-        "Inserting new cache entry for {}.narinfo with status: {status:?}",
-        hash.string
-    );
+    tracing::debug!("Setting status of {}.narinfo to {status:?}", hash.string);
 
     sqlx::query!(
         r#"
             INSERT INTO cache (hash, status)
             VALUES (?,?)
+            ON CONFLICT(hash)
+            DO UPDATE SET status = excluded.status
         "#,
         hash.string,
         status
@@ -453,46 +515,21 @@ where
 }
 
 #[tracing::instrument(level = "debug")]
-pub async fn update_status<'c, E>(
-    executor: E,
-    hash: &nix::Hash,
-    status: Status,
-) -> anyhow::Result<()>
+pub async fn get_reported_total_nar_size<'c, E>(executor: E) -> anyhow::Result<usize>
 where
     E: sqlx::SqliteExecutor<'c>,
 {
-    tracing::debug!("Updating status of {}.narinfo to {status:?}", hash.string);
-
-    sqlx::query!(
-        r#"
-            UPDATE cache
-            SET status = ?
-            WHERE hash = ?
-        "#,
-        status,
-        hash.string
-    )
-    .execute(executor)
-    .await?;
-
-    Ok(())
-}
-
-#[tracing::instrument(level = "debug")]
-pub async fn get_reported_nar_size<'c, E>(executor: E) -> anyhow::Result<u64>
-where
-    E: sqlx::SqliteExecutor<'c>,
-{
-    tracing::debug!("Getting reported size of cached nar files");
+    tracing::debug!("Getting reported total size of cached nar files");
 
     Ok(sqlx::query_scalar!(
         r#"
-            SELECT SUM(file_size) FROM narinfo
+            SELECT SUM(file_size)
+            FROM narinfo
         "#
     )
     .fetch_one(executor)
     .await?
-    .unwrap_or_default() as u64)
+    .unwrap_or_default() as usize)
 }
 
 #[tracing::instrument(level = "debug")]
@@ -514,29 +551,30 @@ where
     .is_some())
 }
 
-// HACK: Added `Copy` trait by bypass moved value error, but disallows the use of `&mut _`
+#[tracing::instrument(level = "debug")]
 pub async fn is_nar_file_cached<'c, E>(executor: E, nar_file: &nix::NarFile) -> anyhow::Result<bool>
 where
-    E: sqlx::SqliteExecutor<'c> + Copy,
+    E: sqlx::SqliteExecutor<'c>,
 {
     let compression = nar_file.compression.to_string();
-    let hash = match sqlx::query_scalar!(
+
+    Ok(sqlx::query_scalar!(
         r#"
-            SELECT hash
-            FROM narinfo
-            WHERE file_hash = ? AND compression = ?
+            SELECT 1
+            FROM cache
+            INNER JOIN narinfo on cache.hash = narinfo.hash
+            WHERE
+                narinfo.file_hash = ? AND
+                narinfo.compression = ? AND
+                cache.status = ?
         "#,
         nar_file.hash.string,
-        compression
+        compression,
+        Status::Available
     )
     .fetch_optional(executor)
     .await?
-    {
-        Some(hash) => hash,
-        None => return Ok(false),
-    };
-
-    is_cached_by_hash(executor, &nix::Hash::from_hash(hash)).await
+    .is_some())
 }
 
 #[allow(dead_code)]

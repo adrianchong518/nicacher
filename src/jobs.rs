@@ -169,21 +169,19 @@ async fn cache_nar(
                 tracing::warn!("Narinfo already cached");
                 true
             }
-            None => {
-                cache::db::insert_status(&mut tx, &hash, Status::Fetching)
-                    .await
-                    .context("Failed to insert new cache status of `Fetching`")
-                    .map_err(|e| Err(error::Error::from(e).into()))?;
-                false
-            }
             _ => {
-                cache::db::update_status(&mut tx, &hash, Status::Fetching)
+                cache::db::set_status(&mut tx, &hash, Status::Fetching)
                     .await
-                    .context("Failed to update cache status to `Fetching`")
+                    .context("Failed to set cache status to `Fetching`")
                     .map_err(|e| Err(error::Error::from(e).into()))?;
                 false
             }
         };
+
+        cache::db::set_last_cached(&mut tx, &hash)
+            .await
+            .context("Failed to set last_cached datatime to current time")
+            .map_err(|e| Err(error::Error::from(e).into()))?;
 
         transaction!(commit: tx).map_err(|e| Err(error::Error::from(e).into()))?;
 
@@ -227,7 +225,7 @@ async fn cache_nar(
                 .context("Error when inserting narinfo into cache database")
                 .map_err(error::Error::from)?;
 
-            cache::db::update_status(&mut tx, &hash, cache::db::Status::OnlyInfo)
+            cache::db::set_status(&mut tx, &hash, cache::db::Status::OnlyInfo)
                 .await
                 .context("Failed to update cache status to `OnlyInfo`")
                 .map_err(error::Error::from)?;
@@ -247,7 +245,7 @@ async fn cache_nar(
         .context("Error when downloading nar file")
         .map_err(error::Error::from)?;
 
-    cache::db::update_status(cache.db_pool(), &hash, cache::db::Status::Available)
+    cache::db::set_status(cache.db_pool(), &hash, cache::db::Status::Available)
         .await
         .context("Failed to update cache status to `Available`")
         .map_err(error::Error::from)?;
@@ -299,7 +297,7 @@ async fn purge_nar(
             _ => true,
         };
 
-        cache::db::update_status(&mut tx, &hash, Status::Purging)
+        cache::db::set_status(&mut tx, &hash, Status::Purging)
             .await
             .context("Failed to update cache status to `Purging`")
             .map_err(|e| Err(error::Error::from(e).into()))?;

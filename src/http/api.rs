@@ -67,6 +67,15 @@ async fn get_nar_info(
         })?;
 
     if let Some(nar_info) = nar_info {
+        cache::db::set_last_accessed(cache.db_pool(), &hash)
+            .await
+            .with_context(|| {
+                format!(
+                    "Failed to set last_accessed time for {}.narinfo due to internal error",
+                    hash.string
+                )
+            })?;
+
         Ok((
             [(header::CONTENT_TYPE, nix::NARINFO_MIME)],
             nar_info.to_string(),

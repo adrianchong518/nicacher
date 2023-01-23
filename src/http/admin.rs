@@ -4,10 +4,10 @@ use axum::{
     http::StatusCode,
     response::IntoResponse,
 };
-use futures::TryStreamExt as _;
+use futures::{StreamExt as _, TryStreamExt as _};
 use serde::Deserialize;
 
-use crate::{app, cache, error, jobs, nix};
+use crate::{app, cache, error, jobs, nix, transaction};
 
 pub(super) fn router() -> axum::Router<app::State> {
     use axum::routing::get;
@@ -53,7 +53,7 @@ async fn cache_size(
         .await
         .context("Failed to get total cached nar file disk size")?;
 
-    let reported_size = cache::db::get_reported_nar_size(cache.db_pool())
+    let reported_size = cache::db::get_reported_total_nar_size(cache.db_pool())
         .await
         .context("Failed to get reported cache size")?;
 
@@ -135,22 +135,39 @@ async fn list_cached(
     Query(ListLimit { limit }): Query<ListLimit>,
     State(app::State { cache, .. }): State<app::State>,
 ) -> error::Result<impl IntoResponse> {
-    let cached_store_paths = cache::db::get_store_paths(cache.db_pool())
-        .map_ok(|p| nix::StorePath::to_string(&p))
-        .try_fold(
-            String::new(),
-            |acc, path| async move { Ok(acc + "\n" + &path) },
-        )
-        .await
-        .context("Failed to get cached store paths")?;
+    let (num_cached, cached_store_paths) = {
+        let mut tx = transaction!(begin: cache)?;
 
-    Ok(format!(
-        "\
+        let num_cached = cache::db::get_num_store_paths(&mut tx).await?;
+
+        let cached_store_paths = cache::db::get_store_paths(&mut tx)
+            .map_ok(|p| nix::StorePath::to_string(&p))
+            .take(limit)
+            .try_fold(
+                String::new(),
+                |acc, path| async move { Ok(acc + &path + "\n") },
+            )
+            .await
+            .context("Failed to get cached store paths")?;
+
+        transaction!(commit: tx)?;
+
+        (num_cached, cached_store_paths)
+    };
+
+    if num_cached == 0 {
+        Ok("No (0) derivations cached".into_response())
+    } else {
+        Ok(format!(
+            "\
+Number derivations cached: {num_cached}
 Store paths of cached derivations: (limit: {limit})
 
 {}",
-        cached_store_paths
-    ))
+            cached_store_paths
+        )
+        .into_response())
+    }
 }
 
 async fn list_cache_diff(
