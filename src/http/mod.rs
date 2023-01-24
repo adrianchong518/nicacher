@@ -1,6 +1,8 @@
 mod admin;
 mod api;
 
+use std::fmt;
+
 use anyhow::Context as _;
 
 use crate::app;
@@ -61,4 +63,44 @@ async fn shutdown_signal() {
     }
 
     println!("signal received, starting graceful shutdown");
+}
+
+type Result<T> = std::result::Result<T, Error>;
+
+struct Error(anyhow::Error);
+
+impl fmt::Debug for Error {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+impl fmt::Display for Error {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+impl axum::response::IntoResponse for Error {
+    fn into_response(self) -> axum::response::Response {
+        tracing::error!("{:?}", self);
+
+        (
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            format!(
+                "Failed to handle request due to internal server error:\n{:?}",
+                self
+            ),
+        )
+            .into_response()
+    }
+}
+
+impl<E> From<E> for Error
+where
+    E: Into<anyhow::Error>,
+{
+    fn from(err: E) -> Self {
+        Self(err.into())
+    }
 }

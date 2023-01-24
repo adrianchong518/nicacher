@@ -7,7 +7,7 @@ use axum::{
 use futures::{StreamExt as _, TryStreamExt as _};
 use serde::Deserialize;
 
-use crate::{app, cache, error, jobs, nix, transaction};
+use crate::{app, cache, http, jobs, nix, transaction};
 
 pub(super) fn router() -> axum::Router<app::State> {
     use axum::routing::get;
@@ -25,7 +25,7 @@ pub(super) fn router() -> axum::Router<app::State> {
 async fn nar_entry(
     Path(hash): Path<nix::Hash>,
     State(app::State { cache, .. }): State<app::State>,
-) -> error::Result<impl IntoResponse> {
+) -> http::Result<impl IntoResponse> {
     Ok(format!(
         "{:#?}",
         cache::db::get_entry(cache.db_pool(), &hash).await?
@@ -35,7 +35,7 @@ async fn nar_entry(
 async fn nar_status(
     Path(hash): Path<nix::Hash>,
     State(app::State { cache, .. }): State<app::State>,
-) -> error::Result<impl IntoResponse> {
+) -> http::Result<impl IntoResponse> {
     Ok(format!(
         "{:#?}",
         cache::db::get_status(cache.db_pool(), &hash).await?
@@ -44,7 +44,7 @@ async fn nar_status(
 
 async fn cache_size(
     State(app::State { config, cache, .. }): State<app::State>,
-) -> error::Result<impl IntoResponse> {
+) -> http::Result<impl IntoResponse> {
     let disk_size = cache::disk_size(&config)
         .await
         .context("Failed to get total cache disk size")?;
@@ -75,7 +75,7 @@ async fn cache_nar(
     Path(hash): Path<nix::Hash>,
     Query(IsForce { is_force }): Query<IsForce>,
     State(app::State { mut workers, .. }): State<app::State>,
-) -> error::Result<impl IntoResponse> {
+) -> http::Result<impl IntoResponse> {
     workers
         .push_job(jobs::Job::CacheNar {
             hash: hash.clone(),
@@ -93,7 +93,7 @@ async fn purge_nar(
     State(app::State {
         cache, mut workers, ..
     }): State<app::State>,
-) -> error::Result<impl IntoResponse> {
+) -> http::Result<impl IntoResponse> {
     let is_cached = cache::db::is_cached_by_hash(cache.db_pool(), &hash)
         .await
         .with_context(|| format!("Failed to get information on {}.narinfo", hash.string))?;
@@ -134,7 +134,7 @@ impl Default for ListLimit {
 async fn list_cached(
     Query(ListLimit { limit }): Query<ListLimit>,
     State(app::State { cache, .. }): State<app::State>,
-) -> error::Result<impl IntoResponse> {
+) -> http::Result<impl IntoResponse> {
     let (num_cached, cached_store_paths) = {
         let mut tx = transaction!(begin: cache)?;
 
@@ -173,7 +173,7 @@ Store paths of cached derivations: (limit: {limit})
 async fn list_cache_diff(
     Query(ListLimit { limit }): Query<ListLimit>,
     State(app::State { config, cache, .. }): State<app::State>,
-) -> error::Result<impl IntoResponse> {
+) -> http::Result<impl IntoResponse> {
     let diff = cache::missing_from_channel_upstreams(&config, &cache).await?;
     let diff_len = diff.len();
 

@@ -1,7 +1,6 @@
 mod app;
 mod cache;
 mod config;
-mod error;
 mod fetch;
 mod http;
 mod jobs;
@@ -12,7 +11,7 @@ use anyhow::Context as _;
 const PKG_NAME: &str = env!("CARGO_PKG_NAME");
 
 #[tokio::main]
-async fn main() -> error::Result<()> {
+async fn main() -> anyhow::Result<()> {
     {
         use tracing::subscriber::set_global_default;
         use tracing_subscriber::{filter::EnvFilter, prelude::*};

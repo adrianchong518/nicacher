@@ -5,7 +5,10 @@ use apalis::prelude::{Job as ApalisJob, *};
 use serde::{Deserialize, Serialize};
 use tracing::Instrument as _;
 
-use crate::{app, cache, config, error, fetch, nix, transaction};
+use crate::{app, cache, config, fetch, nix, transaction};
+
+// TODO: fix error handling when narinfo and nar file cannot be fetched from upstream
+// TODO: handle `Job::PurgeNar` requests better, ie force actually tries to delete fetching jobs
 
 macro_rules! extract_state {
     ({ $($var:ident),* $(,)? } <- $ctx:expr) => {
@@ -128,6 +131,10 @@ async fn dispatch_jobs(job: Job, ctx: JobContext) -> Result<JobResult, JobError>
             Ok(JobResult::Success)
         }
     }
+    .map_err(|e| {
+        tracing::error!("Job failed: {e:#}");
+        JobError::Failed(e.into())
+    })
 }
 
 #[tracing::instrument(skip(config, cache))]
@@ -136,18 +143,18 @@ async fn cache_nar(
     cache: &cache::Cache,
     hash: nix::Hash,
     is_force: bool,
-) -> Result<JobResult, JobError> {
+) -> anyhow::Result<JobResult> {
     tracing::info!("Caching {} narinfo and corresponding nar file", hash.string);
 
     let ret = async {
         use cache::db::Status;
 
-        let mut tx = transaction!(begin: cache).map_err(|e| Err(error::Error::from(e).into()))?;
+        let mut tx = transaction!(begin: cache).map_err(Err)?;
 
         let is_info_available = match cache::db::get_status(&mut tx, &hash)
             .await
             .context("Failed to check cache status")
-            .map_err(|e| Err(error::Error::from(e).into()))?
+            .map_err(Err)?
         {
             Some(Status::Fetching) => {
                 tracing::warn!("Already fetching by other worker, killing");
@@ -173,7 +180,7 @@ async fn cache_nar(
                 cache::db::set_status(&mut tx, &hash, Status::Fetching)
                     .await
                     .context("Failed to set cache status to `Fetching`")
-                    .map_err(|e| Err(error::Error::from(e).into()))?;
+                    .map_err(Err)?;
                 false
             }
         };
@@ -181,11 +188,11 @@ async fn cache_nar(
         cache::db::set_last_cached(&mut tx, &hash)
             .await
             .context("Failed to set last_cached datatime to current time")
-            .map_err(|e| Err(error::Error::from(e).into()))?;
+            .map_err(Err)?;
 
-        transaction!(commit: tx).map_err(|e| Err(error::Error::from(e).into()))?;
+        transaction!(commit: tx).map_err(Err)?;
 
-        Ok::<_, Result<JobResult, JobError>>(is_info_available)
+        Ok::<_, anyhow::Result<JobResult>>(is_info_available)
     }
     .instrument(tracing::debug_span!("cache_nar_init"))
     .await;
@@ -199,8 +206,7 @@ async fn cache_nar(
         tracing::debug!("Skipping request from upstream, querying from local db");
         let maybe_v = cache::db::get_nar_info_with_upstream(cache.db_pool(), &hash)
             .await
-            .context("Error when querying narinfo from local db")
-            .map_err(error::Error::from)?;
+            .context("Error when querying narinfo from local db")?;
 
         if let Some(v) = maybe_v {
             v
@@ -214,25 +220,22 @@ async fn cache_nar(
 
         let (nar_info, upstream) = fetch::request_nar_info(config, &hash)
             .await
-            .context("Error when requesting narinfo")
-            .map_err(error::Error::from)?;
+            .context("Error when requesting narinfo")?;
 
         async {
-            let mut tx = transaction!(begin: cache).map_err(error::Error::from)?;
+            let mut tx = transaction!(begin: cache)?;
 
             cache::db::insert_nar_info(&mut tx, &hash, &nar_info, &upstream, is_force)
                 .await
-                .context("Error when inserting narinfo into cache database")
-                .map_err(error::Error::from)?;
+                .context("Error when inserting narinfo into cache database")?;
 
             cache::db::set_status(&mut tx, &hash, cache::db::Status::OnlyInfo)
                 .await
-                .context("Failed to update cache status to `OnlyInfo`")
-                .map_err(error::Error::from)?;
+                .context("Failed to update cache status to `OnlyInfo`")?;
 
-            transaction!(commit: tx).map_err(error::Error::from)?;
+            transaction!(commit: tx)?;
 
-            Ok::<_, JobError>(())
+            Result::Ok::<_, anyhow::Error>(())
         }
         .instrument(tracing::debug_span!("cache_nar_insert_info"))
         .await?;
@@ -242,13 +245,11 @@ async fn cache_nar(
 
     fetch::download_nar_file(config, &upstream, &nar_info)
         .await
-        .context("Error when downloading nar file")
-        .map_err(error::Error::from)?;
+        .context("Error when downloading nar file")?;
 
     cache::db::set_status(cache.db_pool(), &hash, cache::db::Status::Available)
         .await
-        .context("Failed to update cache status to `Available`")
-        .map_err(error::Error::from)?;
+        .context("Failed to update cache status to `Available`")?;
 
     Ok(JobResult::Success)
 }
@@ -259,18 +260,18 @@ async fn purge_nar(
     cache: &cache::Cache,
     hash: nix::Hash,
     is_force: bool,
-) -> Result<JobResult, JobError> {
+) -> anyhow::Result<JobResult> {
     tracing::info!("Purging {} narinfo and corresponding nar file", hash.string);
 
     let ret = async {
         use cache::db::Status;
 
-        let mut tx = transaction!(begin: cache).map_err(|e| Err(error::Error::from(e).into()))?;
+        let mut tx = transaction!(begin: cache).map_err(Err)?;
 
         let is_nar_file_cached = match cache::db::get_status(&mut tx, &hash)
             .await
             .context("Failed to check cache status")
-            .map_err(|e| Err(error::Error::from(e).into()))?
+            .map_err(Err)?
         {
             None => {
                 tracing::warn!("Not cached, killing");
@@ -300,11 +301,11 @@ async fn purge_nar(
         cache::db::set_status(&mut tx, &hash, Status::Purging)
             .await
             .context("Failed to update cache status to `Purging`")
-            .map_err(|e| Err(error::Error::from(e).into()))?;
+            .map_err(Err)?;
 
-        transaction!(commit: tx).map_err(|e| Err(error::Error::from(e).into()))?;
+        transaction!(commit: tx).map_err(Err)?;
 
-        Ok::<_, Result<JobResult, JobError>>(is_nar_file_cached)
+        Ok::<_, anyhow::Result<JobResult>>(is_nar_file_cached)
     }
     .instrument(tracing::debug_span!("purge_nar_init"))
     .await;
@@ -318,8 +319,7 @@ async fn purge_nar(
         let nar_file_path = {
             let maybe_path = cache::db::get_nar_file_path(cache.db_pool(), config, &hash)
                 .await
-                .with_context(|| format!("Failed to get {} narinfo from cache db", hash.string))
-                .map_err(error::Error::from)?;
+                .with_context(|| format!("Failed to get {} narinfo from cache db", hash.string))?;
 
             if let Some(path) = maybe_path {
                 path
@@ -334,14 +334,12 @@ async fn purge_nar(
 
         tokio::fs::remove_file(nar_file_path)
             .await
-            .context("Error when deeleting nar file")
-            .map_err(error::Error::from)?;
+            .context("Error when deeleting nar file")?;
     }
 
     cache::db::purge_nar_info(cache.db_pool(), &hash)
         .await
-        .context("Error when deleting narinfo entry from cache db")
-        .map_err(error::Error::from)?;
+        .context("Error when deleting narinfo entry from cache db")?;
 
     Ok(JobResult::Success)
 }

@@ -1,4 +1,4 @@
-use crate::{app, cache, error, http, jobs, nix};
+use crate::{app, cache, http, jobs, nix};
 
 use axum::{
     extract::{Path, State},
@@ -54,7 +54,7 @@ async fn get_nar_info(
     State(app::State {
         cache, mut workers, ..
     }): State<app::State>,
-) -> error::Result<impl IntoResponse> {
+) -> http::Result<impl IntoResponse> {
     tracing::info!("Request for {}.narinfo", hash.string);
 
     let nar_info = cache::db::get_nar_info(cache.db_pool(), &hash)
@@ -107,7 +107,7 @@ async fn get_nar_info(
 async fn get_nar_file(
     Path(nar_file): Path<nix::NarFile>,
     State(app::State { config, cache, .. }): State<app::State>,
-) -> error::Result<impl IntoResponse> {
+) -> http::Result<impl IntoResponse> {
     tracing::info!("Request for {nar_file}");
 
     let res = (|| async {
