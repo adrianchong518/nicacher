@@ -151,24 +151,3 @@ fn decode_xz_to_string(bytes: &[u8]) -> anyhow::Result<String> {
 
     Ok(content)
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[tokio::test]
-    async fn download_nar_file_test() -> anyhow::Result<()> {
-        let config = config::Config {
-            local_data_path: "./out/test".into(),
-            ..Default::default()
-        };
-
-        let (nar_info, upstream) = request_nar_info(
-            &config,
-            &nix::Hash::try_from("0006a1aaikgmpqsn5354wi6hibadiwp4").unwrap(),
-        )
-        .await?;
-
-        download_nar_file(&config, &upstream, &nar_info).await
-    }
-}

@@ -13,7 +13,6 @@ const PKG_NAME: &str = env!("CARGO_PKG_NAME");
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     {
-        use tracing::subscriber::set_global_default;
         use tracing_subscriber::{filter::EnvFilter, prelude::*};
 
         tracing_log::LogTracer::init().context("Failed to set logger")?;
@@ -34,7 +33,22 @@ async fn main() -> anyhow::Result<()> {
             .with(tracing_bunyan_formatter::JsonStorageLayer)
             .with(env_filter);
 
-        set_global_default(subscriber).context("Failed to set subscriber")?;
+        tracing::subscriber::set_global_default(subscriber).context("Failed to set subscriber")?;
+
+        // Set up panic logging
+        std::panic::set_hook(Box::new(|panic| {
+            if let Some(location) = panic.location() {
+                tracing::error!(
+                    message = %panic,
+                    panic.file = location.file(),
+                    panic.line = location.line(),
+                    panic.column = location.column(),
+                    panic.backtrace = ?backtrace::Backtrace::new()
+                );
+            } else {
+                tracing::error!(message = %panic);
+            }
+        }));
     }
 
     let app = app::App::new().await?;

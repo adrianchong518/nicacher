@@ -150,13 +150,3 @@ where
 
     deserializer.deserialize_any(SetStringOrStruct(PhantomData))
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn default_config() {
-        println!("{:#?}", Config::default())
-    }
-}

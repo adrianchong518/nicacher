@@ -74,7 +74,10 @@ impl Workers {
                                 .push_job(job)
                                 .await
                                 .context("Failed to push job")
-                                .map_err(error::Error::from)?;
+                                .map_err(|e| {
+                                    tracing::error!("Job failed: {e:#}");
+                                    JobError::Failed(e.into())
+                                })?;
 
                             Ok::<_, JobError>(JobResult::Success)
                         })),
@@ -88,7 +91,7 @@ impl Workers {
                 .layer(Extension(state.clone()))
                 .build_fn(dispatch_jobs)
         });
-        // .register(new_cron_worker!("*/5 * * * * *" => Job::Test));
+        // .register(new_cron_worker!("*/10 * * * * *" => Job::Test));
 
         tracing::info!("Starting workers");
 
