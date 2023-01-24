@@ -1,6 +1,6 @@
 pub mod db;
 
-use std::{collections::HashSet, path::PathBuf};
+use std::{collections::HashSet, io, path::PathBuf};
 
 use anyhow::Context as _;
 use futures::TryStreamExt as _;
@@ -40,22 +40,28 @@ impl Cache {
     }
 }
 
-pub fn nar_file_path(config: &config::Config, nar_info: &nix::NarInfo) -> PathBuf {
-    nar_file_path_from_parts(config, &nar_info.file_hash, &nar_info.compression)
-}
+#[tracing::instrument(skip_all)]
+pub async fn write_nar_file(
+    config: &config::Config,
+    nar_file: &nix::NarFile,
+) -> anyhow::Result<()> {
+    use tokio::io::AsyncWriteExt as _;
 
-pub fn nar_file_path_from_nar_file(config: &config::Config, nar_file: &nix::NarFile) -> PathBuf {
-    nar_file_path_from_parts(config, &nar_file.hash, &nar_file.compression)
-}
+    let file_path = nar_file_path_from_nar_file(config, &nar_file.info);
 
-pub async fn disk_size(config: &config::Config) -> tokio::io::Result<u64> {
-    tracing::debug!("Getting total cache disk size");
-    folder_size(&config.local_data_path).await
-}
+    tracing::debug!("Writing nar file to {}", file_path.display());
 
-pub async fn nar_disk_size(config: &config::Config) -> tokio::io::Result<u64> {
-    tracing::debug!("Getting total cached nar file disk size");
-    folder_size(&config.local_data_path.join(NAR_FILE_DIR)).await
+    tokio::fs::File::create(&file_path)
+        .await
+        .with_context(|| {
+            format!(
+                "Failed to create/open {} for writing nar file",
+                file_path.display()
+            )
+        })?
+        .write_all(&nar_file.data)
+        .await
+        .with_context(|| format!("Failed to write nar file to {}", file_path.display()))
 }
 
 #[tracing::instrument(skip_all)]
@@ -77,6 +83,27 @@ pub async fn missing_from_channel_upstreams(
         .difference(&cached_store_paths)
         .map(Clone::clone)
         .collect())
+}
+
+pub fn nar_file_path(config: &config::Config, nar_info: &nix::NarInfo) -> PathBuf {
+    nar_file_path_from_parts(config, &nar_info.file_hash, &nar_info.compression)
+}
+
+pub fn nar_file_path_from_nar_file(
+    config: &config::Config,
+    nar_file: &nix::NarFileInfo,
+) -> PathBuf {
+    nar_file_path_from_parts(config, &nar_file.hash, &nar_file.compression)
+}
+
+pub async fn disk_size(config: &config::Config) -> tokio::io::Result<u64> {
+    tracing::debug!("Getting total cache disk size");
+    folder_size(&config.local_data_path).await
+}
+
+pub async fn nar_disk_size(config: &config::Config) -> tokio::io::Result<u64> {
+    tracing::debug!("Getting total cached nar file disk size");
+    folder_size(&config.local_data_path.join(NAR_FILE_DIR)).await
 }
 
 #[async_recursion::async_recursion]

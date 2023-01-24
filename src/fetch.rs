@@ -58,101 +58,87 @@ where
         .map_err(anyhow::Error::from)
 }
 
-async fn request_nar_info_raw(
+#[tracing::instrument(skip(config))]
+pub async fn request_derivation(
     config: &config::Config,
     hash: &nix::Hash,
-) -> anyhow::Result<(reqwest::Response, nix::Upstream)> {
+) -> Option<nix::Derivation> {
     let stream = stream::iter(config.upstreams.iter()).filter_map(|upstream| async {
-        let url = upstream
-            .url()
-            .join(&format!("{}.narinfo", hash.string))
-            .map_err(|e| {
-                tracing::warn!(
-                    "Failed to build narinfo url with {} and {}: {e}",
-                    upstream.url(),
-                    hash.string
-                );
-            })
-            .ok()?;
+        (|| async {
+            let url = upstream
+                .url()
+                .join(&format!("{}.narinfo", hash.string))
+                .with_context(|| {
+                    format!(
+                        "Failed to build narinfo url with {} and {}",
+                        upstream.url(),
+                        hash.string
+                    )
+                })?;
 
-        let res = (|| async { reqwest::get(url.clone()).await?.error_for_status() })()
-            .await
-            .map_err(|e| {
-                tracing::warn!("Failed to request {}.narinfo from {url}: {e}", hash.string,);
-            })
-            .ok()?;
+            let nar_info = {
+                let text = (|| async {
+                    reqwest::get(url.clone())
+                        .await?
+                        .error_for_status()?
+                        .text()
+                        .await
+                })()
+                .await
+                .with_context(|| format!("Failed to request {}.narinfo from {url}", hash.string))?;
 
-        Some::<(reqwest::Response, nix::Upstream)>((res, upstream.as_ref().clone()))
+                nix::NarInfo::from_str(&text).with_context(|| {
+                    format!(
+                        "Failed to parse narinfo when fetching {}.narinfo from {url}",
+                        hash.string
+                    )
+                })?
+            };
+
+            let info = nar_info.store_path.derivation_info.clone();
+
+            let nar_file = {
+                let url = upstream.url().join(&nar_info.url)?;
+
+                let info = nix::NarFileInfo {
+                    hash: nar_info.file_hash.clone(),
+                    compression: nar_info.compression.clone(),
+                };
+
+                let data = (|| async {
+                    reqwest::get(url.clone())
+                        .await?
+                        .error_for_status()?
+                        .bytes()
+                        .await
+                })()
+                .await
+                .with_context(|| format!("Failed to request nar file from {url}"))?;
+
+                nix::NarFile { info, data }
+            };
+
+            Ok::<nix::Derivation, anyhow::Error>(nix::Derivation {
+                info,
+                nar_info,
+                nar_file,
+                upstream: upstream.clone().into(),
+            })
+        })()
+        .await
+        .map_err(|e| {
+            tracing::warn!(
+                "Failed to fetch {}.narinfo from {}: {e:#}",
+                hash.string,
+                upstream.url()
+            );
+        })
+        .ok()
     });
+
     futures::pin_mut!(stream);
 
-    stream.next().await.ok_or_else(|| {
-        anyhow::anyhow!(
-            "Failed to request {}.narinfo from all upstreams",
-            hash.string
-        )
-    })
-}
-
-#[tracing::instrument(skip(config))]
-pub async fn request_nar_info(
-    config: &config::Config,
-    hash: &nix::Hash,
-) -> anyhow::Result<(nix::NarInfo, nix::Upstream)> {
-    tracing::info!("Requesting {}.narinfo from upstream", hash.string);
-
-    let (res, upstream) = request_nar_info_raw(config, hash).await?;
-    let nar_info = nix::NarInfo::from_str(&res.text().await?)
-        .with_context(|| format!("Failed to parse narinfo when fetching {hash}"))?;
-
-    Ok((nar_info, upstream))
-}
-
-async fn request_nar_file_raw(
-    upstream: &nix::Upstream,
-    url_path: &str,
-) -> anyhow::Result<reqwest::Response> {
-    let url = upstream.url().join(url_path)?;
-
-    reqwest::get(url.clone())
-        .await?
-        .error_for_status()
-        .with_context(|| format!("Failed to request nar file from {url}"))
-}
-
-#[tracing::instrument(
-    skip_all,
-    fields(nar_info_url = nar_info.url.to_string(), upstream_url = upstream.url().to_string()))
-]
-pub async fn download_nar_file(
-    config: &config::Config,
-    upstream: &nix::Upstream,
-    nar_info: &nix::NarInfo,
-) -> anyhow::Result<()> {
-    tracing::info!("Downloading {} from {}", nar_info.url, upstream.url());
-
-    let nar_file_bytes = request_nar_file_raw(upstream, &nar_info.url)
-        .await?
-        .bytes()
-        .await?;
-
-    let file_path = cache::nar_file_path(config, nar_info);
-
-    tracing::debug!(
-        "Writing contents of {} to {}",
-        nar_info.url,
-        file_path.display()
-    );
-
-    write_bytes_to_file(&nar_file_bytes, &file_path)
-        .await
-        .with_context(|| {
-            format!(
-                "Failed to write narfile ({}) to {}",
-                nar_info.url,
-                file_path.display()
-            )
-        })
+    stream.next().await
 }
 
 fn decode_xz_to_string(bytes: &[u8]) -> anyhow::Result<String> {
@@ -164,19 +150,6 @@ fn decode_xz_to_string(bytes: &[u8]) -> anyhow::Result<String> {
         .context("Failed to decode bytes as ascii string")?;
 
     Ok(content)
-}
-
-async fn write_bytes_to_file<B, P>(bytes: B, path: P) -> io::Result<()>
-where
-    B: AsRef<[u8]>,
-    P: AsRef<Path>,
-{
-    use tokio::io::AsyncWriteExt as _;
-
-    tokio::fs::File::create(&path)
-        .await?
-        .write_all(bytes.as_ref())
-        .await
 }
 
 #[cfg(test)]

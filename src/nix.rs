@@ -34,7 +34,7 @@ pub struct NarInfo {
     pub deriver: Option<String>,
     #[builder(default)]
     pub system: Option<String>,
-    pub references: Vec<Derivation>,
+    pub references: Vec<DerivationInfo>,
     #[builder(default)]
     pub signature: Option<String>,
 }
@@ -145,7 +145,7 @@ impl FromStr for NarInfo {
                     "References" => nar_info_builder.references(
                         value
                             .split_whitespace()
-                            .map(Derivation::from_str)
+                            .map(DerivationInfo::from_str)
                             .collect::<Result<Vec<_>, _>>()
                             .map_err(Self::Err::InvalidReference)?,
                     ),
@@ -169,19 +169,25 @@ impl TryFrom<&str> for NarInfo {
     }
 }
 
-#[derive(Debug, DeserializeFromStr)]
+#[derive(Debug)]
 pub struct NarFile {
+    pub info: NarFileInfo,
+    pub data: bytes::Bytes,
+}
+
+#[derive(Debug, DeserializeFromStr)]
+pub struct NarFileInfo {
     pub hash: Hash,
     pub compression: CompressionType,
 }
 
-impl fmt::Display for NarFile {
+impl fmt::Display for NarFileInfo {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}.nar.{}", self.hash.string, self.compression)
     }
 }
 
-impl FromStr for NarFile {
+impl FromStr for NarFileInfo {
     type Err = anyhow::Error;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
@@ -196,13 +202,21 @@ impl FromStr for NarFile {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct Derivation {
+    pub info: DerivationInfo,
+    pub nar_info: NarInfo,
+    pub nar_file: NarFile,
+    pub upstream: Upstream,
+}
+
+#[derive(Clone, Debug)]
+pub struct DerivationInfo {
     pub package: String,
     pub hash: Hash,
 }
 
-impl Derivation {
+impl DerivationInfo {
     pub fn name(&self) -> String {
         format!("{}-{}", self.hash.string, self.package)
     }
@@ -218,7 +232,7 @@ pub enum DerivationParseError {
     InvalidHash(HashParseError),
 }
 
-impl FromStr for Derivation {
+impl FromStr for DerivationInfo {
     type Err = DerivationParseError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
@@ -232,7 +246,7 @@ impl FromStr for Derivation {
     }
 }
 
-impl fmt::Display for Derivation {
+impl fmt::Display for DerivationInfo {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.name())
     }
@@ -346,12 +360,12 @@ impl From<&str> for HashMethod {
 #[derive(Clone, Debug)]
 pub struct StorePath {
     pub store_path_root: PathBuf,
-    pub derivation: Derivation,
+    pub derivation_info: DerivationInfo,
 }
 
 impl StorePath {
     pub fn path(&self) -> PathBuf {
-        self.store_path_root.join(self.derivation.name())
+        self.store_path_root.join(self.derivation_info.name())
     }
 }
 
@@ -387,7 +401,7 @@ impl TryFrom<&Path> for StorePath {
 
         Ok(StorePath {
             store_path_root,
-            derivation,
+            derivation_info: derivation,
         })
     }
 }

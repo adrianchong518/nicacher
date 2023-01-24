@@ -7,7 +7,6 @@ use tracing::Instrument as _;
 
 use crate::{app, cache, config, fetch, nix, transaction};
 
-// TODO: fix error handling when narinfo and nar file cannot be fetched from upstream
 // TODO: handle `Job::PurgeNar` requests better, ie force actually tries to delete fetching jobs
 
 macro_rules! extract_state {
@@ -151,11 +150,7 @@ async fn cache_nar(
 
         let mut tx = transaction!(begin: cache).map_err(Err)?;
 
-        let is_info_available = match cache::db::get_status(&mut tx, &hash)
-            .await
-            .context("Failed to check cache status")
-            .map_err(Err)?
-        {
+        match cache::db::get_status(&mut tx, &hash).await.map_err(Err)? {
             Some(Status::Fetching) => {
                 tracing::warn!("Already fetching by other worker, killing");
                 return Err(Ok(JobResult::Kill));
@@ -172,84 +167,56 @@ async fn cache_nar(
                 tracing::warn!("Purging by other worker, killing");
                 return Err(Ok(JobResult::Kill));
             }
-            Some(Status::OnlyInfo) if !is_force => {
-                tracing::warn!("Narinfo already cached");
-                true
-            }
             _ => {
                 cache::db::set_status(&mut tx, &hash, Status::Fetching)
                     .await
-                    .context("Failed to set cache status to `Fetching`")
                     .map_err(Err)?;
-                false
             }
         };
 
         cache::db::set_last_cached(&mut tx, &hash)
             .await
-            .context("Failed to set last_cached datatime to current time")
             .map_err(Err)?;
 
         transaction!(commit: tx).map_err(Err)?;
 
-        Ok::<_, anyhow::Result<JobResult>>(is_info_available)
+        Ok::<_, anyhow::Result<JobResult>>(())
     }
     .instrument(tracing::debug_span!("cache_nar_init"))
     .await;
 
-    let is_info_available = match ret {
-        Ok(v) => v,
-        Err(ret) => return ret,
-    };
+    if let Err(ret) = ret {
+        return ret;
+    }
 
-    let (nar_info, upstream) = if is_info_available {
-        tracing::debug!("Skipping request from upstream, querying from local db");
-        let maybe_v = cache::db::get_nar_info_with_upstream(cache.db_pool(), &hash)
-            .await
-            .context("Error when querying narinfo from local db")?;
-
-        if let Some(v) = maybe_v {
-            v
-        } else {
-            // HACK: There should be a better way of handling this
-            tracing::warn!("Race condition, narinfo became unavaliable, retrying");
-            return Ok(JobResult::Retry);
-        }
-    } else {
-        // TODO: detect if fetch is unsuccessful
-
-        let (nar_info, upstream) = fetch::request_nar_info(config, &hash)
-            .await
-            .context("Error when requesting narinfo")?;
-
+    if let Some(derivation) = fetch::request_derivation(config, &hash).await {
         async {
             let mut tx = transaction!(begin: cache)?;
 
-            cache::db::insert_nar_info(&mut tx, &hash, &nar_info, &upstream, is_force)
-                .await
-                .context("Error when inserting narinfo into cache database")?;
+            cache::db::insert_nar_info(
+                &mut tx,
+                &hash,
+                &derivation.nar_info,
+                &derivation.upstream,
+                is_force,
+            )
+            .await?;
 
-            cache::db::set_status(&mut tx, &hash, cache::db::Status::OnlyInfo)
-                .await
-                .context("Failed to update cache status to `OnlyInfo`")?;
+            cache::db::set_status(&mut tx, &hash, cache::db::Status::Available).await?;
+
+            cache::write_nar_file(config, &derivation.nar_file).await?;
 
             transaction!(commit: tx)?;
 
-            Result::Ok::<_, anyhow::Error>(())
+            tracing::info!("Commit success");
+
+            Ok::<_, anyhow::Error>(())
         }
-        .instrument(tracing::debug_span!("cache_nar_insert_info"))
+        .instrument(tracing::debug_span!("cache_nar_insert"))
         .await?;
-
-        (nar_info, upstream)
-    };
-
-    fetch::download_nar_file(config, &upstream, &nar_info)
-        .await
-        .context("Error when downloading nar file")?;
-
-    cache::db::set_status(cache.db_pool(), &hash, cache::db::Status::Available)
-        .await
-        .context("Failed to update cache status to `Available`")?;
+    } else {
+        cache::db::set_status(cache.db_pool(), &hash, cache::db::Status::NotAvailable).await?;
+    }
 
     Ok(JobResult::Success)
 }
@@ -294,13 +261,12 @@ async fn purge_nar(
                 return Err(Ok(JobResult::Kill));
             }
             Some(Status::NotAvailable) if is_force => false,
-            Some(Status::OnlyInfo) => false,
+            // Some(Status::OnlyInfo) => false,
             _ => true,
         };
 
         cache::db::set_status(&mut tx, &hash, Status::Purging)
             .await
-            .context("Failed to update cache status to `Purging`")
             .map_err(Err)?;
 
         transaction!(commit: tx).map_err(Err)?;

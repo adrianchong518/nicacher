@@ -17,15 +17,12 @@ pub struct Entry {
     last_accessed: Option<chrono::NaiveDateTime>,
 }
 
-#[derive(
-    Clone, Copy, Debug, Default, num_enum::IntoPrimitive, num_enum::FromPrimitive, sqlx::Encode,
-)]
+#[derive(Clone, Copy, Debug, Default, num_enum::IntoPrimitive, num_enum::FromPrimitive)]
 #[repr(i64)]
 pub enum Status {
     #[default]
     NotAvailable,
     Fetching,
-    OnlyInfo,
     Available,
     Purging,
 }
@@ -41,6 +38,19 @@ where
 
     fn compatible(ty: &<DB as sqlx::Database>::TypeInfo) -> bool {
         <i64 as sqlx::Type<DB>>::compatible(ty)
+    }
+}
+
+impl<'q, DB> sqlx::Encode<'q, DB> for Status
+where
+    DB: sqlx::Database,
+    i64: sqlx::Encode<'q, DB>,
+{
+    fn encode_by_ref(
+        &self,
+        buf: &mut <DB as sqlx::database::HasArguments<'q>>::ArgumentBuffer,
+    ) -> sqlx::encode::IsNull {
+        <i64 as sqlx::Encode<DB>>::encode((*self).into(), buf)
     }
 }
 
@@ -155,7 +165,7 @@ where
                 refs,
                 signature
             FROM narinfo
-            WHERE hash = ?
+            WHERE hash = ?;
         "#,
         hash.string
     )
@@ -192,7 +202,7 @@ where
         r#"
             SELECT *
             FROM narinfo
-            WHERE hash = ?
+            WHERE hash = ?;
         "#,
     )
     .bind(&hash.string)
@@ -232,7 +242,7 @@ where
                 file_hash AS hash,
                 compression
             FROM narinfo
-            WHERE hash = ?
+            WHERE hash = ?;
         "#,
         hash.string
     )
@@ -286,7 +296,7 @@ where
         sqlx::query!(
             r#"
                 REPLACE INTO narinfo
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?);
             "#,
             entry.hash,
             entry.store_path,
@@ -309,7 +319,7 @@ where
         sqlx::query!(
             r#"
                 INSERT INTO narinfo
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?);
             "#,
             entry.hash,
             entry.store_path,
@@ -328,7 +338,8 @@ where
         )
     }
     .execute(executor)
-    .await?;
+    .await
+    .context("Failed to insert narinfo into cache database")?;
 
     Ok(())
 }
@@ -348,7 +359,7 @@ where
                 SELECT narinfo.store_path
                 FROM cache
                 INNER JOIN narinfo ON cache.hash = narinfo.hash
-                WHERE cache.status = ?
+                WHERE cache.status = ?;
             "#,
             Status::Available
         )
@@ -373,7 +384,7 @@ where
         r#"
             SELECT COUNT(*)
             FROM cache
-            WHERE status = ?
+            WHERE status = ?;
         "#,
         Status::Available
     )
@@ -391,7 +402,7 @@ where
     sqlx::query!(
         r#"
             DELETE FROM cache
-            WHERE hash = ?
+            WHERE hash = ?;
         "#,
         hash.string
     )
@@ -416,7 +427,7 @@ where
                 last_cached,
                 last_accessed
             FROM cache
-            WHERE hash = ?
+            WHERE hash = ?;
         "#,
         hash.string
     )
@@ -438,12 +449,13 @@ where
         r#"
             UPDATE cache
             SET last_cached = CURRENT_TIMESTAMP
-            WHERE hash = ?
+            WHERE hash = ?;
         "#,
         hash.string,
     )
     .execute(executor)
-    .await?;
+    .await
+    .context("Failed to set last_cached datatime to current time")?;
 
     Ok(())
 }
@@ -462,7 +474,7 @@ where
         r#"
             UPDATE cache
             SET last_accessed = CURRENT_TIMESTAMP
-            WHERE hash = ?
+            WHERE hash = ?;
         "#,
         hash.string,
     )
@@ -479,16 +491,17 @@ where
 {
     tracing::debug!("Querying status of {}.narinfo", hash.string);
 
-    Ok(sqlx::query_scalar!(
+    sqlx::query_scalar!(
         r#"
             SELECT status as "status: Status"
             FROM cache
-            WHERE hash = ?
+            WHERE hash = ?;
         "#,
         hash.string
     )
     .fetch_optional(executor)
-    .await?)
+    .await
+    .context("Failed to check cache status")
 }
 
 #[tracing::instrument(level = "debug")]
@@ -503,13 +516,14 @@ where
             INSERT INTO cache (hash, status)
             VALUES (?,?)
             ON CONFLICT(hash)
-            DO UPDATE SET status = excluded.status
+            DO UPDATE SET status = excluded.status;
         "#,
         hash.string,
         status
     )
     .execute(executor)
-    .await?;
+    .await
+    .with_context(|| format!("Failed to update cache status to `{status:?}`"))?;
 
     Ok(())
 }
@@ -524,7 +538,7 @@ where
     Ok(sqlx::query_scalar!(
         r#"
             SELECT SUM(file_size)
-            FROM narinfo
+            FROM narinfo;
         "#
     )
     .fetch_one(executor)
@@ -541,7 +555,7 @@ where
         r#"
             SELECT 1
             FROM cache
-            WHERE hash = ? AND status = ?
+            WHERE hash = ? AND status = ?;
         "#,
         hash.string,
         Status::Available
@@ -552,7 +566,10 @@ where
 }
 
 #[tracing::instrument(level = "debug")]
-pub async fn is_nar_file_cached<'c, E>(executor: E, nar_file: &nix::NarFile) -> anyhow::Result<bool>
+pub async fn is_nar_file_cached<'c, E>(
+    executor: E,
+    nar_file: &nix::NarFileInfo,
+) -> anyhow::Result<bool>
 where
     E: sqlx::SqliteExecutor<'c>,
 {
@@ -566,7 +583,7 @@ where
             WHERE
                 narinfo.file_hash = ? AND
                 narinfo.compression = ? AND
-                cache.status = ?
+                cache.status = ?;
         "#,
         nar_file.hash.string,
         compression,
@@ -622,7 +639,7 @@ impl NarInfoEntry {
             refs: nar_info
                 .references
                 .iter()
-                .map(nix::Derivation::to_string)
+                .map(nix::DerivationInfo::to_string)
                 .fold(String::new(), |a, v| a + " " + &v),
             signature: nar_info.signature.clone(),
         }
@@ -633,7 +650,7 @@ impl TryFrom<NarInfoEntry> for nix::NarInfo {
     type Error = <nix::NarInfo as FromStr>::Err;
 
     fn try_from(value: NarInfoEntry) -> Result<Self, Self::Error> {
-        use nix::{CompressionType, Derivation, Hash, StorePath};
+        use nix::{CompressionType, DerivationInfo, Hash, StorePath};
 
         let file_hash = Hash::from_method_hash(value.file_hash_method, value.file_hash);
         let compression = value
@@ -661,7 +678,7 @@ impl TryFrom<NarInfoEntry> for nix::NarInfo {
                 value
                     .refs
                     .split_whitespace()
-                    .map(Derivation::from_str)
+                    .map(DerivationInfo::from_str)
                     .collect::<Result<Vec<_>, _>>()
                     .map_err(Self::Error::InvalidReference)?,
             )

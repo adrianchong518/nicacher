@@ -105,7 +105,7 @@ async fn get_nar_info(
 }
 
 async fn get_nar_file(
-    Path(nar_file): Path<nix::NarFile>,
+    Path(nar_file): Path<nix::NarFileInfo>,
     State(app::State { config, cache, .. }): State<app::State>,
 ) -> http::Result<impl IntoResponse> {
     tracing::info!("Request for {nar_file}");
