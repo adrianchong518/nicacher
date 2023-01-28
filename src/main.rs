@@ -8,12 +8,10 @@ mod nix;
 
 use anyhow::Context as _;
 
-const PKG_NAME: &str = env!("CARGO_PKG_NAME");
-
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     {
-        use tracing_subscriber::{filter::EnvFilter, prelude::*};
+        use tracing_subscriber::{filter::EnvFilter, fmt::format::FmtSpan, prelude::*};
 
         tracing_log::LogTracer::init().context("Failed to set logger")?;
 
@@ -25,12 +23,12 @@ async fn main() -> anyhow::Result<()> {
                     .context("Invalid sqlx tracing_subscriber directive")?,
             );
 
-        let formatting_layer =
-            tracing_bunyan_formatter::BunyanFormattingLayer::new(PKG_NAME.into(), std::io::stdout);
+        let formatting_layer = tracing_subscriber::fmt::layer()
+            .with_span_events(FmtSpan::NEW | FmtSpan::CLOSE)
+            .pretty();
 
-        let subscriber = tracing_subscriber::Registry::default()
+        let subscriber = tracing_subscriber::registry()
             .with(formatting_layer)
-            .with(tracing_bunyan_formatter::JsonStorageLayer)
             .with(env_filter);
 
         tracing::subscriber::set_global_default(subscriber).context("Failed to set subscriber")?;
