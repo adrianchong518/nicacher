@@ -12,6 +12,10 @@ use crate::{app, cache, http, jobs, nix, transaction};
 pub(super) fn router() -> axum::Router<app::State> {
     use axum::routing::get;
 
+    let push_job = axum::Router::new()
+        .route("/cache_nar/:hash", get(push_cache_nar))
+        .route("/purge_nar/:hash", get(push_purge_nar));
+
     axum::Router::new()
         .route("/cache_size", get(cache_size))
         .route("/list_cached", get(list_cached))
@@ -20,6 +24,7 @@ pub(super) fn router() -> axum::Router<app::State> {
         .route("/nar_entry/:hash", get(nar_entry))
         .route("/cache_nar/:hash", get(cache_nar))
         .route("/purge_nar/:hash", get(purge_nar))
+        .nest("/push", push_job)
 }
 
 async fn nar_entry(
@@ -74,6 +79,15 @@ struct IsForce {
 async fn cache_nar(
     Path(hash): Path<nix::Hash>,
     Query(IsForce { is_force }): Query<IsForce>,
+    State(app::State { config, cache, .. }): State<app::State>,
+) -> http::Result<impl IntoResponse> {
+    let res = jobs::cache_nar(&config, &cache, hash, is_force).await?;
+    Ok(format!("{res:#?}"))
+}
+
+async fn push_cache_nar(
+    Path(hash): Path<nix::Hash>,
+    Query(IsForce { is_force }): Query<IsForce>,
     State(app::State { mut workers, .. }): State<app::State>,
 ) -> http::Result<impl IntoResponse> {
     workers
@@ -90,33 +104,29 @@ async fn cache_nar(
 async fn purge_nar(
     Path(hash): Path<nix::Hash>,
     Query(IsForce { is_force }): Query<IsForce>,
-    State(app::State {
-        cache, mut workers, ..
-    }): State<app::State>,
+    State(app::State { config, cache, .. }): State<app::State>,
 ) -> http::Result<impl IntoResponse> {
-    let is_cached = cache::db::is_cached_by_hash(cache.db_pool(), &hash)
+    let res = jobs::purge_nar(&config, &cache, hash, is_force).await?;
+    Ok(format!("{res:#?}"))
+}
+
+async fn push_purge_nar(
+    Path(hash): Path<nix::Hash>,
+    Query(IsForce { is_force }): Query<IsForce>,
+    State(app::State { mut workers, .. }): State<app::State>,
+) -> http::Result<impl IntoResponse> {
+    workers
+        .push_job(jobs::Job::PurgeNar {
+            hash: hash.clone(),
+            is_force,
+        })
         .await
-        .with_context(|| format!("Failed to get information on {}.narinfo", hash.string))?;
+        .with_context(|| format!("Failed to push job for purging {} to queue", hash.string))?;
 
-    if is_cached {
-        workers
-            .push_job(jobs::Job::PurgeNar {
-                hash: hash.clone(),
-                is_force,
-            })
-            .await
-            .with_context(|| format!("Failed to push job for purging {} to queue", hash.string))?;
-
-        Ok((
-            StatusCode::OK,
-            format!("Pushed job for purging {} to queue", hash.string),
-        ))
-    } else {
-        Ok((
-            StatusCode::NOT_FOUND,
-            format!("{}.narinfo is not cached", hash.string),
-        ))
-    }
+    Ok((
+        StatusCode::OK,
+        format!("Pushed job for purging {} to queue", hash.string),
+    ))
 }
 
 #[derive(Debug, Deserialize)]

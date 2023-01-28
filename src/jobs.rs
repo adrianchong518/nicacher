@@ -140,7 +140,7 @@ async fn dispatch_jobs(job: Job, ctx: JobContext) -> Result<JobResult, JobError>
 }
 
 #[tracing::instrument(skip(config, cache))]
-async fn cache_nar(
+pub async fn cache_nar(
     config: &config::Config,
     cache: &cache::Cache,
     hash: nix::Hash,
@@ -225,7 +225,7 @@ async fn cache_nar(
 }
 
 #[tracing::instrument(skip(config, cache))]
-async fn purge_nar(
+pub async fn purge_nar(
     config: &config::Config,
     cache: &cache::Cache,
     hash: nix::Hash,
@@ -238,7 +238,7 @@ async fn purge_nar(
 
         let mut tx = transaction!(begin: cache).map_err(Err)?;
 
-        let is_nar_file_cached = match cache::db::get_status(&mut tx, &hash)
+        let nar_file_path = match cache::db::get_status(&mut tx, &hash)
             .await
             .context("Failed to check cache status")
             .map_err(Err)?
@@ -263,9 +263,10 @@ async fn purge_nar(
                 tracing::warn!("Cached data not avaliable, killing");
                 return Err(Ok(JobResult::Kill));
             }
-            Some(Status::NotAvailable) if is_force => false,
-            // Some(Status::OnlyInfo) => false,
-            _ => true,
+            _ => cache::db::get_nar_file_path(cache.db_pool(), config, &hash)
+                .await
+                .with_context(|| format!("Failed to get {} narinfo from cache db", hash.string))
+                .map_err(Err)?,
         };
 
         cache::db::set_status(&mut tx, &hash, Status::Purging)
@@ -274,37 +275,22 @@ async fn purge_nar(
 
         transaction!(commit: tx).map_err(Err)?;
 
-        Ok::<_, anyhow::Result<JobResult>>(is_nar_file_cached)
+        Ok::<_, anyhow::Result<JobResult>>(nar_file_path)
     }
     .instrument(tracing::debug_span!("purge_nar_init"))
     .await;
 
-    let is_nar_file_cached = match ret {
-        Ok(v) => v,
-        Err(ret) => return ret,
-    };
+    match ret {
+        Ok(Some(path)) => {
+            tracing::debug!("Deleting {}", path.display());
 
-    if is_nar_file_cached {
-        let nar_file_path = {
-            let maybe_path = cache::db::get_nar_file_path(cache.db_pool(), config, &hash)
+            tokio::fs::remove_file(path)
                 .await
-                .with_context(|| format!("Failed to get {} narinfo from cache db", hash.string))?;
-
-            if let Some(path) = maybe_path {
-                path
-            } else {
-                // HACK: There should be a better way of handling this
-                tracing::warn!("Race condition, narinfo became unavaliable, retrying");
-                return Ok(JobResult::Retry);
-            }
-        };
-
-        tracing::debug!("Deleting {}", nar_file_path.display());
-
-        tokio::fs::remove_file(nar_file_path)
-            .await
-            .context("Error when deeleting nar file")?;
-    }
+                .context("Error when deeleting nar file")?;
+        }
+        Err(ret) => return ret,
+        _ => {}
+    };
 
     cache::db::purge_nar_info(cache.db_pool(), &hash)
         .await
