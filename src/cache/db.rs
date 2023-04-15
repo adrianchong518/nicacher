@@ -8,7 +8,7 @@ use crate::{cache, config, nix};
 const CACHE_DB_FILE: &str = "cache.db";
 
 #[derive(Clone, Debug)]
-pub(super) struct Database(sqlx::SqlitePool);
+pub struct Database(sqlx::SqlitePool);
 
 #[derive(Debug, sqlx::FromRow)]
 pub struct Entry {
@@ -102,17 +102,15 @@ impl Database {
         Ok(Self(db_pool))
     }
 
-    pub(super) async fn cleanup(self) {
+    pub async fn cleanup(self) {
         self.0.close().await;
     }
 
-    pub(super) async fn transaction(
-        &self,
-    ) -> sqlx::Result<sqlx::Transaction<'static, sqlx::Sqlite>> {
+    pub async fn transaction(&self) -> sqlx::Result<sqlx::Transaction<'static, sqlx::Sqlite>> {
         self.0.begin().await
     }
 
-    pub(super) fn pool(&self) -> &sqlx::SqlitePool {
+    pub fn pool(&self) -> &sqlx::SqlitePool {
         &self.0
     }
 }
@@ -121,7 +119,8 @@ impl Database {
 macro_rules! transaction {
     (begin: $cache:expr) => {
         $cache
-            .db_transaction()
+            .db
+            .transaction()
             .await
             .context("Failed to begin transaction")
     };
@@ -287,7 +286,7 @@ where
     let entry = NarInfoEntry::from_nar_info(hash, nar_info);
     let upstream_url = upstream.url().to_string();
 
-    if force {
+    let query = if force {
         tracing::info!(
             "Forcefully REPLACING {}.narinfo in cache database",
             hash.string
@@ -336,10 +335,12 @@ where
             entry.signature,
             upstream_url,
         )
-    }
-    .execute(executor)
-    .await
-    .context("Failed to insert narinfo into cache database")?;
+    };
+
+    query
+        .execute(executor)
+        .await
+        .context("Failed to insert narinfo into cache database")?;
 
     Ok(())
 }

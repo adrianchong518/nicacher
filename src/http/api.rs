@@ -57,7 +57,7 @@ async fn get_nar_info(
 ) -> http::Result<impl IntoResponse> {
     tracing::info!("Request for {}.narinfo", hash.string);
 
-    let nar_info = cache::db::get_nar_info(cache.db_pool(), &hash)
+    let nar_info = cache::db::get_nar_info(cache.db.pool(), &hash)
         .await
         .with_context(|| {
             format!(
@@ -67,7 +67,7 @@ async fn get_nar_info(
         })?;
 
     if let Some(nar_info) = nar_info {
-        cache::db::set_last_accessed(cache.db_pool(), &hash)
+        cache::db::set_last_accessed(cache.db.pool(), &hash)
             .await
             .with_context(|| {
                 format!(
@@ -111,7 +111,7 @@ async fn get_nar_file(
     tracing::info!("Request for {nar_file}");
 
     let res = (|| async {
-        if cache::db::is_nar_file_cached(cache.db_pool(), &nar_file).await? {
+        if cache::db::is_nar_file_cached(cache.db.pool(), &nar_file).await? {
             let nar_file_path = cache::nar_file_path_from_nar_file(&config, &nar_file);
 
             Ok(tower_http::services::ServeFile::new_with_mime(

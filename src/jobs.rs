@@ -7,8 +7,6 @@ use tracing::Instrument as _;
 
 use crate::{app, cache, config, fetch, nix, transaction};
 
-// TODO: handle `Job::PurgeNar` requests better, ie force actually tries to delete fetching jobs
-
 macro_rules! extract_state {
     ({ $($var:ident),* $(,)? } <- $ctx:expr) => {
         let $crate::app::State { $($var,)* .. } = $ctx.data_opt::<$crate::app::State>().unwrap();
@@ -218,7 +216,7 @@ pub async fn cache_nar(
         .instrument(tracing::debug_span!("cache_nar_insert"))
         .await?;
     } else {
-        cache::db::set_status(cache.db_pool(), &hash, cache::db::Status::NotAvailable).await?;
+        cache::db::set_status(cache.db.pool(), &hash, cache::db::Status::NotAvailable).await?;
     }
 
     Ok(JobResult::Success)
@@ -263,7 +261,7 @@ pub async fn purge_nar(
                 tracing::warn!("Cached data not avaliable, killing");
                 return Err(Ok(JobResult::Kill));
             }
-            _ => cache::db::get_nar_file_path(cache.db_pool(), config, &hash)
+            _ => cache::db::get_nar_file_path(cache.db.pool(), config, &hash)
                 .await
                 .with_context(|| format!("Failed to get {} narinfo from cache db", hash.string))
                 .map_err(Err)?,
@@ -292,7 +290,7 @@ pub async fn purge_nar(
         _ => {}
     };
 
-    cache::db::purge_nar_info(cache.db_pool(), &hash)
+    cache::db::purge_nar_info(cache.db.pool(), &hash)
         .await
         .context("Error when deleting narinfo entry from cache db")?;
 

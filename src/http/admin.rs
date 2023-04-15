@@ -4,7 +4,7 @@ use axum::{
     http::StatusCode,
     response::IntoResponse,
 };
-use futures::{StreamExt as _, TryStreamExt as _};
+use futures::{FutureExt as _, StreamExt as _, TryStreamExt as _};
 use serde::Deserialize;
 
 use crate::{app, cache, http, jobs, nix, transaction};
@@ -33,7 +33,7 @@ async fn nar_entry(
 ) -> http::Result<impl IntoResponse> {
     Ok(format!(
         "{:#?}",
-        cache::db::get_entry(cache.db_pool(), &hash).await?
+        cache::db::get_entry(cache.db.pool(), &hash).await?
     ))
 }
 
@@ -43,7 +43,7 @@ async fn nar_status(
 ) -> http::Result<impl IntoResponse> {
     Ok(format!(
         "{:#?}",
-        cache::db::get_status(cache.db_pool(), &hash).await?
+        cache::db::get_status(cache.db.pool(), &hash).await?
     ))
 }
 
@@ -58,7 +58,7 @@ async fn cache_size(
         .await
         .context("Failed to get total cached nar file disk size")?;
 
-    let reported_size = cache::db::get_reported_total_nar_size(cache.db_pool())
+    let reported_size = cache::db::get_reported_total_nar_size(cache.db.pool())
         .await
         .context("Failed to get reported cache size")?;
 

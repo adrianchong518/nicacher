@@ -48,7 +48,7 @@ impl App {
         )?;
 
         tracing::info!("Cleaning up cache database");
-        self.cache.cleanup().await;
+        self.cache.db.cleanup().await;
 
         Ok(())
     }

@@ -1,6 +1,6 @@
 pub mod db;
 
-use std::{collections::HashSet, io, path::PathBuf};
+use std::{collections::HashSet, path::PathBuf};
 
 use anyhow::Context as _;
 use futures::TryStreamExt as _;
@@ -11,7 +11,7 @@ const NAR_FILE_DIR: &str = "nar";
 
 #[derive(Clone, Debug)]
 pub struct Cache {
-    db: db::Database,
+    pub db: db::Database,
 }
 
 impl Cache {
@@ -25,18 +25,6 @@ impl Cache {
         let db = db::Database::new(config).await?;
 
         Ok(Self { db })
-    }
-
-    pub fn db_pool(&self) -> &sqlx::SqlitePool {
-        self.db.pool()
-    }
-
-    pub async fn db_transaction(&self) -> sqlx::Result<sqlx::Transaction<'static, sqlx::Sqlite>> {
-        self.db.transaction().await
-    }
-
-    pub async fn cleanup(self) {
-        self.db.cleanup().await;
     }
 }
 
@@ -69,7 +57,7 @@ pub async fn missing_from_channel_upstreams(
     config: &config::Config,
     cache: &Cache,
 ) -> anyhow::Result<HashSet<nix::StorePath>> {
-    let cached_store_paths = db::get_store_paths(cache.db_pool())
+    let cached_store_paths = db::get_store_paths(cache.db.pool())
         .try_collect::<HashSet<_>>()
         .await
         .context("Failed to get cached store paths")?;

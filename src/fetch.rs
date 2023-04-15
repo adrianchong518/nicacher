@@ -1,9 +1,9 @@
-use std::{collections::HashSet, io, path::Path, str::FromStr as _};
+use std::{collections::HashSet, io, str::FromStr as _};
 
 use anyhow::Context as _;
 use futures::{stream, StreamExt as _, TryStreamExt as _};
 
-use crate::{cache, config, nix};
+use crate::{config, nix};
 
 const STORE_PATHS_FILE: &str = "store-paths.xz";
 
